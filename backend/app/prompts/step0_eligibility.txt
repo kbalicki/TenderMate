@@ -1,0 +1,37 @@
+Analizujesz polski przetarg pod kątem spełniania warunków udziału w postępowaniu.
+
+## Profil firmy:
+{company_profile_json}
+
+## Treść przetargu:
+{tender_text}
+
+## Treść załączników:
+{attachments_text}
+
+Sprawdź czy firma spełnia WSZYSTKIE warunki udziału w postępowaniu.
+Sprawdź: uprawnienia/koncesje/licencje, doświadczenie (realizacje, min. wartości, liczba projektów),
+personel (role, certyfikaty, lata doświadczenia), sytuacja ekonomiczna/finansowa (OC, przychody),
+brak podstaw wykluczenia (Pzp), inne warunki szczególne (lokalizacja, czas reakcji, ISO, itp.).
+
+Jeśli firma jest software house'em (JDG, tworzenie oprogramowania na zamówienie) a zamówienie dotyczy
+dostawy licencji gotowego oprogramowania lub wymaga statusu autoryzowanego partnera producenta —
+traktuj to jako niespełnienie warunku.
+
+Odpowiedz w formacie JSON:
+{{
+  "eligible": true/false,
+  "conditions": [
+    {{
+      "name": "nazwa warunku po polsku",
+      "description": "co jest wymagane wg dokumentacji",
+      "met": true/false,
+      "reason": "dlaczego spełniony lub niespełniony — odwołaj się do konkretnego miejsca w dokumentach",
+      "fixable": true/false,
+      "fix_options": ["opcja naprawcza 1", "opcja naprawcza 2"]
+    }}
+  ],
+  "summary": "krótkie podsumowanie oceny (2-3 zdania po polsku)",
+  "scope_description": "co trzeba zrealizować w ramach zamówienia (2-3 zdania po polsku)",
+  "estimated_budget": "budżet z dokumentacji lub 'nieokreślony'"
+}}
