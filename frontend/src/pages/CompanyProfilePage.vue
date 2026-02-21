@@ -4,8 +4,10 @@ import {
   getProfile,
   updateProfile,
   addTeamMember,
+  updateTeamMember,
   deleteTeamMember,
   addPortfolioProject,
+  updatePortfolioProject,
   deletePortfolioProject,
 } from '@/api/companyProfile'
 import type { CompanyProfile, TeamMember, PortfolioProject } from '@/types/companyProfile'
@@ -16,17 +18,19 @@ const saving = ref(false)
 const saved = ref(false)
 
 // Team member form
-const newMember = ref<Omit<TeamMember, 'id'>>({
+const emptyMember = (): Omit<TeamMember, 'id'> => ({
   full_name: '',
   role: '',
   experience_years: null,
   qualifications: '',
   bio: '',
 })
+const memberForm = ref<Omit<TeamMember, 'id'>>(emptyMember())
+const editingMemberId = ref<number | null>(null)
 const showMemberForm = ref(false)
 
 // Portfolio form
-const newProject = ref<Omit<PortfolioProject, 'id'>>({
+const emptyProject = (): Omit<PortfolioProject, 'id'> => ({
   project_name: '',
   client_name: '',
   description: '',
@@ -35,6 +39,8 @@ const newProject = ref<Omit<PortfolioProject, 'id'>>({
   year_completed: null,
   technologies_used: [],
 })
+const projectForm = ref<Omit<PortfolioProject, 'id'>>(emptyProject())
+const editingProjectId = ref<number | null>(null)
 const showProjectForm = ref(false)
 const techInput = ref('')
 
@@ -54,31 +60,96 @@ async function saveProfile() {
   }
 }
 
-async function handleAddMember() {
-  const member = await addTeamMember(newMember.value)
-  profile.value?.team_members.push(member)
+// --- Team Members ---
+
+function openAddMember() {
+  editingMemberId.value = null
+  memberForm.value = emptyMember()
+  showMemberForm.value = true
+}
+
+function openEditMember(member: TeamMember) {
+  editingMemberId.value = member.id
+  memberForm.value = {
+    full_name: member.full_name,
+    role: member.role,
+    experience_years: member.experience_years,
+    qualifications: member.qualifications,
+    bio: member.bio,
+  }
+  showMemberForm.value = true
+}
+
+function cancelMemberForm() {
   showMemberForm.value = false
-  newMember.value = { full_name: '', role: '', experience_years: null, qualifications: '', bio: '' }
+  editingMemberId.value = null
+  memberForm.value = emptyMember()
+}
+
+async function handleSaveMember() {
+  if (!profile.value) return
+  if (editingMemberId.value !== null) {
+    const updated = await updateTeamMember(editingMemberId.value, memberForm.value)
+    const idx = profile.value.team_members.findIndex(m => m.id === editingMemberId.value)
+    if (idx !== -1) profile.value.team_members[idx] = updated
+  } else {
+    const created = await addTeamMember(memberForm.value)
+    profile.value.team_members.push(created)
+  }
+  cancelMemberForm()
 }
 
 async function handleDeleteMember(id: number) {
+  if (!confirm('Usunac tego czlonka zespolu?')) return
   await deleteTeamMember(id)
   if (profile.value) {
     profile.value.team_members = profile.value.team_members.filter(m => m.id !== id)
   }
 }
 
-async function handleAddProject() {
-  const project = await addPortfolioProject(newProject.value)
-  profile.value?.portfolio_projects.push(project)
-  showProjectForm.value = false
-  newProject.value = {
-    project_name: '', client_name: '', description: '',
-    contract_value_pln: null, year_started: null, year_completed: null, technologies_used: [],
+// --- Portfolio Projects ---
+
+function openAddProject() {
+  editingProjectId.value = null
+  projectForm.value = emptyProject()
+  showProjectForm.value = true
+}
+
+function openEditProject(project: PortfolioProject) {
+  editingProjectId.value = project.id
+  projectForm.value = {
+    project_name: project.project_name,
+    client_name: project.client_name,
+    description: project.description,
+    contract_value_pln: project.contract_value_pln,
+    year_started: project.year_started,
+    year_completed: project.year_completed,
+    technologies_used: [...(project.technologies_used || [])],
   }
+  showProjectForm.value = true
+}
+
+function cancelProjectForm() {
+  showProjectForm.value = false
+  editingProjectId.value = null
+  projectForm.value = emptyProject()
+}
+
+async function handleSaveProject() {
+  if (!profile.value) return
+  if (editingProjectId.value !== null) {
+    const updated = await updatePortfolioProject(editingProjectId.value, projectForm.value)
+    const idx = profile.value.portfolio_projects.findIndex(p => p.id === editingProjectId.value)
+    if (idx !== -1) profile.value.portfolio_projects[idx] = updated
+  } else {
+    const created = await addPortfolioProject(projectForm.value)
+    profile.value.portfolio_projects.push(created)
+  }
+  cancelProjectForm()
 }
 
 async function handleDeleteProject(id: number) {
+  if (!confirm('Usunac ten projekt?')) return
   await deletePortfolioProject(id)
   if (profile.value) {
     profile.value.portfolio_projects = profile.value.portfolio_projects.filter(p => p.id !== id)
@@ -87,7 +158,7 @@ async function handleDeleteProject(id: number) {
 
 function addTech() {
   if (techInput.value.trim()) {
-    newProject.value.technologies_used.push(techInput.value.trim())
+    projectForm.value.technologies_used.push(techInput.value.trim())
     techInput.value = ''
   }
 }
@@ -192,28 +263,61 @@ function addTech() {
     <!-- Team Tab -->
     <div v-if="activeTab === 'team'" class="space-y-4">
       <div class="flex justify-end">
-        <button @click="showMemberForm = !showMemberForm" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
+        <button @click="showMemberForm ? cancelMemberForm() : openAddMember()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
           {{ showMemberForm ? 'Anuluj' : '+ Dodaj czlonka zespolu' }}
         </button>
       </div>
 
+      <!-- Member form (add/edit) -->
       <div v-if="showMemberForm" class="bg-white rounded-lg shadow p-6 space-y-4">
+        <h3 class="text-sm font-semibold text-gray-900">
+          {{ editingMemberId !== null ? 'Edytuj czlonka zespolu' : 'Nowy czlonek zespolu' }}
+        </h3>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <input v-model="newMember.full_name" placeholder="Imie i nazwisko" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-          <input v-model="newMember.role" placeholder="Rola (np. Senior Developer)" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-          <input v-model.number="newMember.experience_years" type="number" placeholder="Lata doswiadczenia" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-          <input v-model="newMember.qualifications" placeholder="Kwalifikacje/certyfikaty" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Imie i nazwisko</label>
+            <input v-model="memberForm.full_name" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Rola</label>
+            <input v-model="memberForm.role" placeholder="np. Senior Developer" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Lata doswiadczenia</label>
+            <input v-model.number="memberForm.experience_years" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Kwalifikacje / certyfikaty</label>
+            <input v-model="memberForm.qualifications" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
         </div>
-        <textarea v-model="newMember.bio" placeholder="Krotkie bio" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"></textarea>
-        <button @click="handleAddMember" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">Dodaj</button>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Bio</label>
+          <textarea v-model="memberForm.bio" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"></textarea>
+        </div>
+        <div class="flex gap-2">
+          <button @click="handleSaveMember" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
+            {{ editingMemberId !== null ? 'Zapisz zmiany' : 'Dodaj' }}
+          </button>
+          <button @click="cancelMemberForm" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300">Anuluj</button>
+        </div>
       </div>
 
-      <div v-for="member in profile.team_members" :key="member.id" class="bg-white rounded-lg shadow p-4 flex items-center justify-between">
-        <div>
-          <p class="font-medium text-gray-900">{{ member.full_name }}</p>
-          <p class="text-sm text-gray-500">{{ member.role }} · {{ member.experience_years }} lat doswiadczenia</p>
+      <!-- Members list -->
+      <div v-for="member in profile.team_members" :key="member.id" class="bg-white rounded-lg shadow p-4">
+        <div class="flex items-start justify-between">
+          <div class="flex-1">
+            <p class="font-medium text-gray-900">{{ member.full_name }}</p>
+            <p class="text-sm text-indigo-600">{{ member.role }}</p>
+            <p class="text-xs text-gray-500 mt-1">{{ member.experience_years }} lat doswiadczenia</p>
+            <p v-if="member.qualifications" class="text-xs text-gray-600 mt-1">{{ member.qualifications }}</p>
+            <p v-if="member.bio" class="text-xs text-gray-500 mt-1 italic">{{ member.bio }}</p>
+          </div>
+          <div class="flex gap-2 ml-4">
+            <button @click="openEditMember(member)" class="text-indigo-600 hover:text-indigo-800 text-sm">Edytuj</button>
+            <button @click="handleDeleteMember(member.id)" class="text-red-600 hover:text-red-800 text-sm">Usun</button>
+          </div>
         </div>
-        <button @click="handleDeleteMember(member.id)" class="text-red-600 hover:text-red-800 text-sm">Usun</button>
       </div>
       <div v-if="profile.team_members.length === 0" class="text-center text-gray-400 py-8">Brak czlonkow zespolu</div>
     </div>
@@ -221,45 +325,73 @@ function addTech() {
     <!-- Portfolio Tab -->
     <div v-if="activeTab === 'portfolio'" class="space-y-4">
       <div class="flex justify-end">
-        <button @click="showProjectForm = !showProjectForm" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
+        <button @click="showProjectForm ? cancelProjectForm() : openAddProject()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
           {{ showProjectForm ? 'Anuluj' : '+ Dodaj projekt' }}
         </button>
       </div>
 
+      <!-- Project form (add/edit) -->
       <div v-if="showProjectForm" class="bg-white rounded-lg shadow p-6 space-y-4">
+        <h3 class="text-sm font-semibold text-gray-900">
+          {{ editingProjectId !== null ? 'Edytuj projekt' : 'Nowy projekt' }}
+        </h3>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <input v-model="newProject.project_name" placeholder="Nazwa projektu" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-          <input v-model="newProject.client_name" placeholder="Klient" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-          <input v-model.number="newProject.contract_value_pln" type="number" placeholder="Wartosc kontraktu (PLN)" class="border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Nazwa projektu</label>
+            <input v-model="projectForm.project_name" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Klient</label>
+            <input v-model="projectForm.client_name" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Wartosc kontraktu (PLN netto)</label>
+            <input v-model.number="projectForm.contract_value_pln" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          </div>
           <div class="flex gap-2">
-            <input v-model.number="newProject.year_started" type="number" placeholder="Rok start" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
-            <input v-model.number="newProject.year_completed" type="number" placeholder="Rok koniec" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            <div class="flex-1">
+              <label class="block text-xs text-gray-500 mb-1">Rok start</label>
+              <input v-model.number="projectForm.year_started" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
+            <div class="flex-1">
+              <label class="block text-xs text-gray-500 mb-1">Rok koniec</label>
+              <input v-model.number="projectForm.year_completed" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            </div>
           </div>
         </div>
-        <textarea v-model="newProject.description" placeholder="Opis projektu" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"></textarea>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">Technologie</label>
+          <label class="block text-xs text-gray-500 mb-1">Opis projektu</label>
+          <textarea v-model="projectForm.description" rows="2" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"></textarea>
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1">Technologie</label>
           <div class="flex gap-2 mb-2">
-            <input v-model="techInput" @keyup.enter="addTech" placeholder="Dodaj technologie" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+            <input v-model="techInput" @keyup.enter="addTech" placeholder="Dodaj technologie i nacisnij Enter" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
             <button @click="addTech" class="px-3 py-2 bg-gray-200 rounded-lg text-sm hover:bg-gray-300">+</button>
           </div>
           <div class="flex flex-wrap gap-2">
             <span
-              v-for="(tech, i) in newProject.technologies_used"
+              v-for="(tech, i) in projectForm.technologies_used"
               :key="i"
               class="bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded-full flex items-center gap-1"
             >
               {{ tech }}
-              <button @click="newProject.technologies_used.splice(i, 1)" class="hover:text-red-600">&times;</button>
+              <button @click="projectForm.technologies_used.splice(i, 1)" class="hover:text-red-600">&times;</button>
             </span>
           </div>
         </div>
-        <button @click="handleAddProject" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">Dodaj</button>
+        <div class="flex gap-2">
+          <button @click="handleSaveProject" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">
+            {{ editingProjectId !== null ? 'Zapisz zmiany' : 'Dodaj' }}
+          </button>
+          <button @click="cancelProjectForm" class="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg text-sm hover:bg-gray-300">Anuluj</button>
+        </div>
       </div>
 
+      <!-- Projects list -->
       <div v-for="project in profile.portfolio_projects" :key="project.id" class="bg-white rounded-lg shadow p-4">
         <div class="flex items-start justify-between">
-          <div>
+          <div class="flex-1">
             <p class="font-medium text-gray-900">{{ project.project_name }}</p>
             <p class="text-sm text-gray-500">{{ project.client_name }} · {{ project.contract_value_pln?.toLocaleString() }} PLN · {{ project.year_started }}-{{ project.year_completed }}</p>
             <p class="text-sm text-gray-600 mt-1">{{ project.description }}</p>
@@ -267,7 +399,10 @@ function addTech() {
               <span v-for="tech in project.technologies_used" :key="tech" class="bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded">{{ tech }}</span>
             </div>
           </div>
-          <button @click="handleDeleteProject(project.id)" class="text-red-600 hover:text-red-800 text-sm">Usun</button>
+          <div class="flex gap-2 ml-4">
+            <button @click="openEditProject(project)" class="text-indigo-600 hover:text-indigo-800 text-sm">Edytuj</button>
+            <button @click="handleDeleteProject(project.id)" class="text-red-600 hover:text-red-800 text-sm">Usun</button>
+          </div>
         </div>
       </div>
       <div v-if="profile.portfolio_projects.length === 0" class="text-center text-gray-400 py-8">Brak projektow w portfolio</div>
@@ -291,11 +426,11 @@ function addTech() {
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">Min. budżet (PLN)</label>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Min. budzet (PLN)</label>
           <input v-model.number="profile.preferences_min_budget" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
         <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">Max. budżet (PLN)</label>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Max. budzet (PLN)</label>
           <input v-model.number="profile.preferences_max_budget" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
       </div>

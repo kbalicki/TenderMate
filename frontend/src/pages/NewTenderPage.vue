@@ -80,7 +80,7 @@ function removeFile(index: number) {
           mode === 'manual' ? 'bg-indigo-600 text-white' : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
         ]"
       >
-        Reczne wprowadzenie
+        Ręczne wprowadzenie
       </button>
     </div>
 
@@ -88,7 +88,7 @@ function removeFile(index: number) {
     <div v-if="mode === 'url'" class="bg-white rounded-lg shadow p-6 space-y-4">
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">
-          Adresy URL przetargow (jeden na linie)
+          Adresy URL przetargów (jeden na linię)
         </label>
         <textarea
           v-model="urlText"
@@ -109,22 +109,22 @@ function removeFile(index: number) {
     <!-- Manual mode -->
     <div v-if="mode === 'manual'" class="bg-white rounded-lg shadow p-6 space-y-4">
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Tytul przetargu</label>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Tytuł przetargu</label>
         <input v-model="title" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="Opcjonalnie" />
       </div>
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Tresc przetargu</label>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Treść przetargu</label>
         <textarea
           v-model="tenderText"
           rows="10"
-          placeholder="Wklej tresc SWZ / OPZ / ogoloszen..."
+          placeholder="Wklej treść SWZ / OPZ / ogłoszenia..."
           class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
         ></textarea>
       </div>
 
       <!-- Dropzone -->
       <div>
-        <label class="block text-sm font-medium text-gray-700 mb-1">Zalaczniki</label>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Załączniki</label>
         <div
           @dragover.prevent="isDragging = true"
           @dragleave="isDragging = false"
@@ -135,7 +135,7 @@ function removeFile(index: number) {
           ]"
           @click="($refs.fileInput as HTMLInputElement)?.click()"
         >
-          <p class="text-sm text-gray-500">Przeciagnij pliki tutaj lub kliknij, aby wybrac</p>
+          <p class="text-sm text-gray-500">Przeciągnij pliki tutaj lub kliknij, aby wybrać</p>
           <p class="text-xs text-gray-400 mt-1">PDF, DOC, DOCX, XLS, XLSX, ZIP</p>
           <input ref="fileInput" type="file" multiple class="hidden" @change="handleFileInput" />
         </div>
@@ -153,7 +153,7 @@ function removeFile(index: number) {
         :disabled="loading || (!tenderText.trim() && !files.length)"
         class="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50"
       >
-        {{ loading ? 'Tworzenie...' : 'Utworz przetarg' }}
+        {{ loading ? 'Tworzenie...' : 'Utwórz przetarg' }}
       </button>
     </div>
   </div>

@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { listTenders } from '@/api/tenders'
 import type { Tender } from '@/types/tender'
+import { getStatusLabel, getStatusColor } from '@/composables/useStatusLabels'
 
 const recentTenders = ref<Tender[]>([])
 const loading = ref(true)
@@ -17,7 +18,7 @@ onMounted(async () => {
 
 <template>
   <div>
-    <h1 class="text-2xl font-bold text-gray-900 mb-6">Dashboard</h1>
+    <h1 class="text-2xl font-bold text-gray-900 mb-6">Panel główny</h1>
 
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
       <div class="bg-white rounded-lg shadow p-5">
@@ -45,9 +46,9 @@ onMounted(async () => {
           + Nowy przetarg
         </RouterLink>
       </div>
-      <div v-if="loading" class="p-8 text-center text-gray-400">Ladowanie...</div>
+      <div v-if="loading" class="p-8 text-center text-gray-400">Ładowanie...</div>
       <div v-else-if="recentTenders.length === 0" class="p-8 text-center text-gray-400">
-        Brak przetargow. Dodaj pierwszy przetarg.
+        Brak przetargów. Dodaj pierwszy przetarg.
       </div>
       <div v-else class="divide-y divide-gray-200">
         <RouterLink
@@ -57,19 +58,11 @@ onMounted(async () => {
           class="flex items-center justify-between px-5 py-3 hover:bg-gray-50 transition-colors"
         >
           <div>
-            <p class="text-sm font-medium text-gray-900">{{ tender.title || 'Bez tytulu' }}</p>
-            <p class="text-xs text-gray-500">{{ tender.source_type === 'url' ? tender.source_url : 'Reczny' }}</p>
+            <p class="text-sm font-medium text-gray-900">{{ tender.title || 'Bez tytułu' }}</p>
+            <p class="text-xs text-gray-500">{{ tender.source_type === 'url' ? tender.source_url : 'Ręczny' }}</p>
           </div>
-          <span
-            :class="[
-              'text-xs px-2 py-1 rounded-full',
-              tender.status === 'completed' ? 'bg-green-100 text-green-800' :
-              tender.status === 'rejected' ? 'bg-red-100 text-red-800' :
-              tender.status === 'analyzing' ? 'bg-blue-100 text-blue-800' :
-              'bg-gray-100 text-gray-800'
-            ]"
-          >
-            {{ tender.status }}
+          <span :class="['text-xs px-2 py-1 rounded-full', getStatusColor(tender.status)]">
+            {{ getStatusLabel(tender.status) }}
           </span>
         </RouterLink>
       </div>

@@ -33,3 +33,8 @@ export async function getTender(id: number): Promise<TenderDetail> {
 export async function deleteTender(id: number): Promise<void> {
   await api.delete(`/tenders/${id}`)
 }
+
+export async function rescrapeTender(id: number): Promise<Tender> {
+  const { data } = await api.post(`/tenders/${id}/rescrape`)
+  return data
+}

@@ -17,6 +17,7 @@ from app.schemas.tender import (
     TenderDetailOut,
     TenderAttachmentOut,
 )
+from app.services import scraper_service
 
 router = APIRouter(prefix="/tenders", tags=["tenders"])
 
@@ -34,11 +35,10 @@ async def list_tenders(
 
 @router.post("/from-url", response_model=TenderOut, status_code=201)
 async def create_from_url(data: TenderFromUrl, db: AsyncSession = Depends(get_db)):
-    # For now, create one tender per URL; scraping will be added later
     if not data.urls:
         raise HTTPException(400, "At least one URL is required")
 
-    url = data.urls[0]  # TODO: handle multiple URLs
+    url = data.urls[0]
     tender = Tender(
         source_type="url",
         source_url=url,
@@ -56,6 +56,26 @@ async def create_from_url(data: TenderFromUrl, db: AsyncSession = Depends(get_db
     await db.commit()
     await db.refresh(tender)
 
+    # Launch scraping in background
+    await scraper_service.launch_scraping(tender.id)
+
+    return tender
+
+
+@router.post("/{tender_id}/rescrape", response_model=TenderOut)
+async def rescrape_tender(tender_id: int, db: AsyncSession = Depends(get_db)):
+    """Re-run scraping for a tender (e.g. after scrape failure)."""
+    tender = await db.get(Tender, tender_id)
+    if not tender:
+        raise HTTPException(404, "Tender not found")
+    if tender.source_type != "url" or not tender.source_url:
+        raise HTTPException(400, "Tender has no source URL")
+
+    tender.status = "scraping"
+    await db.commit()
+    await db.refresh(tender)
+
+    await scraper_service.launch_scraping(tender.id)
     return tender
 
 

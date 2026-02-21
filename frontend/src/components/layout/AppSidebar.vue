@@ -4,7 +4,7 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 
 const navItems = [
-  { path: '/', label: 'Dashboard', icon: '📊' },
+  { path: '/', label: 'Panel główny', icon: '📊' },
   { path: '/tenders', label: 'Przetargi', icon: '📋' },
   { path: '/tenders/new', label: 'Nowy przetarg', icon: '➕' },
   { path: '/company', label: 'Profil firmy', icon: '🏢' },

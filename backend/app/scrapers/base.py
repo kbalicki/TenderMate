@@ -1,53 +1,49 @@
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from pathlib import Path
+"""Portal detection utilities for scraper module.
 
-from playwright.async_api import Page
+The actual scraping is delegated to the external microservice
+(scraper.tools.k4.pl). This module retains portal detection utilities.
+"""
+
+# Known Polish procurement portal domains for URL validation
+KNOWN_DOMAINS = [
+    "bazakonkurencyjnosci.funduszeeuropejskie.gov.pl",
+    "oneplace.marketplanet.pl",
+    "platformazakupowa.pl",
+    "platformaofertowa.pl",
+    "platforma.eb2b.com.pl",
+    "e-propublico.pl",
+    "ted.europa.eu",
+    "platformazakupowa.logintrade.pl",
+    "ezamowienia.gov.pl",
+    "swpp2.gkpge.pl",
+    "josephine.proebiz.com",
+    "zakupy.arp.pl",
+]
 
 
-@dataclass
-class ScrapedTender:
-    title: str
-    contracting_authority: str | None = None
-    reference_number: str | None = None
-    submission_deadline: str | None = None  # ISO format
-    full_text_markdown: str = ""
-    raw_html: str = ""
-    attachment_urls: list[str] = field(default_factory=list)
+def detect_portal(url: str) -> str | None:
+    """Try to identify the portal name from a URL."""
+    url_lower = url.lower()
+    portal_names = {
+        "bazakonkurencyjnosci": "Baza Konkurencyjności",
+        "ezamowienia.gov.pl": "e-Zamówienia",
+        "platformazakupowa.pl": "platformazakupowa.pl",
+        "platformaofertowa.pl": "Platforma Ofertowa",
+        "eb2b.com.pl": "eB2B",
+        "e-propublico.pl": "e-ProPublico",
+        "ted.europa.eu": "TED Europa",
+        "logintrade": "Logintrade",
+        "marketplanet": "Marketplanet OnePlace",
+        "swpp2.gkpge.pl": "System Zakupowy GK PGE",
+        "josephine.proebiz": "Josephine",
+        "zakupy.arp.pl": "ARP Zakupy",
+    }
+    for domain_part, name in portal_names.items():
+        if domain_part in url_lower:
+            return name
+    return None
 
 
-class BaseScraper(ABC):
-    """One implementation per supported portal."""
-
-    PORTAL_NAME: str = ""
-    URL_PATTERNS: list[str] = []
-
-    @abstractmethod
-    async def scrape(self, url: str, page: Page, output_dir: Path) -> ScrapedTender:
-        ...
-
-    async def download_attachments(
-        self, urls: list[str], output_dir: Path, page: Page
-    ) -> list[Path]:
-        """Download files to output_dir/attachments/."""
-        att_dir = output_dir / "attachments"
-        att_dir.mkdir(exist_ok=True)
-        downloaded = []
-
-        for url in urls:
-            try:
-                response = await page.request.get(url)
-                # Extract filename from Content-Disposition or URL
-                cd = response.headers.get("content-disposition", "")
-                if "filename=" in cd:
-                    filename = cd.split("filename=")[-1].strip('" ')
-                else:
-                    filename = url.split("/")[-1].split("?")[0] or "attachment"
-
-                file_path = att_dir / filename
-                file_path.write_bytes(await response.body())
-                downloaded.append(file_path)
-            except Exception:
-                continue  # Log and skip failed downloads
-
-        return downloaded
+def is_known_portal(url: str) -> bool:
+    """Quick check if URL belongs to any known procurement portal."""
+    return any(domain in url.lower() for domain in KNOWN_DOMAINS)
