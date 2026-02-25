@@ -584,15 +584,16 @@ async function loadExistingAttachments() {
             <!-- Kryteria oceny ofert -->
             <div v-if="step0.evaluation_criteria?.length" class="border-t border-indigo-200 pt-2">
               <p class="text-xs font-semibold text-gray-800 mb-1">Kryteria oceny ofert</p>
-              <div class="space-y-1">
-                <div v-for="(crit, i) in step0.evaluation_criteria" :key="i" class="flex items-start gap-2 text-xs">
-                  <span class="font-bold text-indigo-700 whitespace-nowrap">{{ crit.weight_pct }}%</span>
-                  <div>
-                    <span class="font-medium text-gray-900">{{ crit.name }}</span>
-                    <span v-if="crit.scoring_method" class="text-gray-500 ml-1">— {{ crit.scoring_method }}</span>
+              <div class="space-y-1.5">
+                <div v-for="(crit, i) in step0.evaluation_criteria" :key="i" class="bg-white rounded border border-indigo-200 p-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-bold text-gray-900">{{ crit.name }}</span>
+                    <span class="text-xs font-black text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">{{ crit.weight_pct }}%</span>
                   </div>
+                  <p v-if="crit.scoring_method" class="text-[11px] text-gray-600 mt-0.5">{{ crit.scoring_method }}</p>
                 </div>
               </div>
+              <p class="text-[10px] text-gray-400 mt-1">Szczegółowa strategia punktowa pojawi się w kroku 3 (wycena)</p>
             </div>
           </div>
           <div class="flex gap-2">
@@ -798,18 +799,25 @@ async function loadExistingAttachments() {
       <div v-if="activeTab === 3 && step3" class="bg-white rounded-lg shadow p-4 mb-4">
         <h2 class="text-sm font-semibold text-gray-900 mb-3">Krok 3: Wycena i koszty</h2>
 
-        <!-- Evaluation criteria -->
-        <div v-if="step3.evaluation_criteria?.length" class="mb-3">
-          <h3 class="text-xs font-semibold text-gray-700 mb-1">Kryteria oceny ofert</h3>
-          <div class="space-y-1">
-            <div v-for="(cr, i) in step3.evaluation_criteria" :key="i" class="bg-indigo-50 rounded p-2">
-              <div class="flex items-center justify-between">
-                <span class="text-xs font-medium text-gray-900">{{ cr.name }}</span>
-                <span class="text-xs font-bold text-indigo-700">{{ cr.weight_pct }}%</span>
+        <!-- Evaluation criteria — prominent strategy section -->
+        <div v-if="step3.evaluation_criteria?.length" class="mb-4 border-2 border-indigo-300 rounded-lg overflow-hidden">
+          <div class="bg-indigo-600 px-3 py-2">
+            <h3 class="text-sm font-bold text-white">Kryteria oceny ofert — strategia punktowa</h3>
+            <p class="text-[11px] text-indigo-200">Zapoznaj się z każdym kryterium i zdecyduj, co oferujesz</p>
+          </div>
+          <div class="divide-y divide-indigo-100">
+            <div v-for="(cr, i) in step3.evaluation_criteria" :key="i" class="p-3">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-sm font-bold text-gray-900">{{ cr.name }}</span>
+                <span class="text-sm font-black text-indigo-700 bg-indigo-100 px-2 py-0.5 rounded">{{ cr.weight_pct }}%</span>
               </div>
-              <p class="text-[11px] text-gray-600">{{ cr.scoring_method }}</p>
-              <p class="text-[11px] text-green-700"><strong>Max:</strong> {{ cr.how_to_maximize }}</p>
-              <p v-if="cr.our_strategy" class="text-[11px] text-indigo-700"><strong>Strategia:</strong> {{ cr.our_strategy }}</p>
+              <p class="text-xs text-gray-600 mb-1">{{ cr.scoring_method }}</p>
+              <div class="bg-green-50 border border-green-200 rounded p-2 mt-1">
+                <p class="text-xs text-green-800"><strong>Jak zdobyć MAX punktów:</strong> {{ cr.how_to_maximize }}</p>
+              </div>
+              <div v-if="cr.our_strategy" class="bg-blue-50 border border-blue-200 rounded p-2 mt-1">
+                <p class="text-xs text-blue-800"><strong>Nasza propozycja:</strong> {{ cr.our_strategy }}</p>
+              </div>
             </div>
           </div>
         </div>

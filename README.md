@@ -7,10 +7,10 @@ Lokalne narzędzie webowe do analizy przetargów publicznych i zapytań ofertowy
 - **Profil firmy** — dane firmy, zespół, portfolio, preferencje przetargowe, roczny obrót, stawka rbh
 - **Import przetargów** — z URL (scraping portali) lub ręczne wprowadzenie treści + załączników
 - **Analiza AI** — 7-krokowy workflow z interakcją użytkownika:
-  - Krok 0: Sprawdzenie warunków udziału (eligibility check)
+  - Krok 0: Sprawdzenie warunków udziału + wadium + kryteria oceny ofert
   - Krok 1: Zakres i wymagania (funkcjonalne, niefunkcjonalne, deliverables)
   - Krok 2: Rozwiązanie techniczne (architektura, stack, analiza open source)
-  - Krok 3: Wycena i koszty (pakiety prac, stawka rbh × czas + marginy QA/ryzyko)
+  - Krok 3: Wycena i koszty + strategia punktowa (jak zdobyć max punktów w każdym kryterium)
   - Krok 4: Analiza ryzyk (macierz ryzyk, red flagi, rekomendacja GO/NO-GO)
   - Krok 5: Dokumenty ofertowe (instrukcje, wadium, checklist)
   - Krok 6: Weryfikacja dokumentów (upload + AI review)
