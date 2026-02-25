@@ -53,6 +53,9 @@ async def lifespan(app: FastAPI):
         await _try_alter(conn, "ai_summary TEXT", "tenders")
         await _try_alter(conn, "authority_type VARCHAR(20)", "tenders")
         await _try_alter(conn, "annual_revenue_pln INTEGER", "company_profiles")
+        await _try_alter(conn, "legal_form VARCHAR(100)", "company_profiles")
+        await _try_alter(conn, "company_since_year INTEGER", "company_profiles")
+        await _try_alter(conn, "has_electronic_signature BOOLEAN DEFAULT 0", "company_profiles")
 
     # Seed default user
     from app.database import async_session
@@ -64,6 +67,10 @@ async def lifespan(app: FastAPI):
         if not result.scalar_one_or_none():
             session.add(User(id=1, name="Default User"))
             await session.commit()
+
+    # Load concurrency settings from DB
+    from app.services.concurrency import init_from_db as init_concurrency
+    await init_concurrency()
 
     yield
 

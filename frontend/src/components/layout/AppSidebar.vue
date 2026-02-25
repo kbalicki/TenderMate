@@ -4,14 +4,14 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 
 const navItems = [
-  { path: '/', label: 'Panel główny', icon: '📊' },
-  { path: '/tenders', label: 'Przetargi', icon: '📋' },
+  { path: '/', label: 'Przetargi', icon: '📋' },
   { path: '/tenders/new', label: 'Nowy przetarg', icon: '➕' },
   { path: '/company', label: 'Profil firmy', icon: '🏢' },
+  { path: '/settings', label: 'Ustawienia', icon: '⚙️' },
 ]
 
 function isActive(path: string): boolean {
-  if (path === '/') return route.path === '/'
+  if (path === '/') return route.path === '/' || route.path === '/tenders'
   return route.path.startsWith(path)
 }
 </script>

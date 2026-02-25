@@ -18,6 +18,8 @@ from app.models.tender_attachment import TenderAttachment
 from app.models.analysis import Analysis
 from app.schemas.tender import (
     TenderFromUrl,
+    TenderFromUrlResult,
+    TenderFromUrlResponse,
     TenderOut,
     TenderDetailOut,
     TenderAttachmentOut,
@@ -109,7 +111,14 @@ async def list_tenders(
     # Base query
     base = select(Tender)
     if status:
-        base = base.where(Tender.status == status)
+        if status == "archived":
+            from datetime import datetime
+            base = base.where(
+                Tender.submission_deadline < datetime.utcnow(),
+                Tender.status.notin_(["completed", "rejected"]),
+            )
+        else:
+            base = base.where(Tender.status == status)
     if search:
         like_pattern = f"%{search}%"
         base = base.where(
@@ -174,33 +183,62 @@ async def list_tenders(
     )
 
 
-@router.post("/from-url", response_model=TenderOut, status_code=201)
+@router.post("/from-url", response_model=TenderFromUrlResponse, status_code=201)
 async def create_from_url(data: TenderFromUrl, db: AsyncSession = Depends(get_db)):
     if not data.urls:
         raise HTTPException(400, "At least one URL is required")
 
-    url = data.urls[0]
-    tender = Tender(
-        source_type="url",
-        source_url=url,
-        status="new",
-    )
-    db.add(tender)
-    await db.commit()
-    await db.refresh(tender)
+    results: list[TenderFromUrlResult] = []
 
-    # Create data directory
-    data_dir = settings.data_dir / "tenders" / str(tender.id)
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "attachments").mkdir(exist_ok=True)
-    tender.data_dir = str(data_dir)
-    await db.commit()
-    await db.refresh(tender)
+    for url in data.urls:
+        url = url.strip()
+        if not url:
+            continue
 
-    # Launch scraping in background
-    await scraper_service.launch_scraping(tender.id)
+        # Check for duplicate by source_url
+        existing = await db.execute(
+            select(Tender).where(Tender.source_url == url).limit(1)
+        )
+        existing_tender = existing.scalars().first()
+        if existing_tender:
+            results.append(TenderFromUrlResult(
+                url=url,
+                status="duplicate",
+                tender_id=existing_tender.id,
+                message=f"Przetarg już istnieje (ID: {existing_tender.id})",
+            ))
+            continue
 
-    return tender
+        tender = Tender(
+            source_type="url",
+            source_url=url,
+            status="new",
+        )
+        db.add(tender)
+        await db.commit()
+        await db.refresh(tender)
+
+        # Create data directory
+        data_dir = settings.data_dir / "tenders" / str(tender.id)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        (data_dir / "attachments").mkdir(exist_ok=True)
+        tender.data_dir = str(data_dir)
+        await db.commit()
+        await db.refresh(tender)
+
+        # Launch scraping in background
+        await scraper_service.launch_scraping(tender.id)
+
+        results.append(TenderFromUrlResult(
+            url=url,
+            status="created",
+            tender_id=tender.id,
+        ))
+
+    if not results:
+        raise HTTPException(400, "No valid URLs provided")
+
+    return TenderFromUrlResponse(results=results)
 
 
 @router.post("/{tender_id}/rescrape", response_model=TenderOut)
@@ -292,6 +330,83 @@ async def delete_tender(tender_id: int, db: AsyncSession = Depends(get_db)):
 
     await db.delete(tender)
     await db.commit()
+
+
+@router.post("/{tender_id}/attachments/upload", response_model=list[TenderAttachmentOut])
+async def upload_attachments(
+    tender_id: int,
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload additional files to a tender. ZIP files are auto-extracted.
+    Duplicates (by filename) are skipped."""
+    from app.services.scraper_service import _sanitize_filename, _extract_zip_files, _guess_mime
+
+    tender = await db.get(Tender, tender_id)
+    if not tender:
+        raise HTTPException(404, "Tender not found")
+
+    data_dir = Path(tender.data_dir) if tender.data_dir else settings.data_dir / "tenders" / str(tender_id)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    att_dir = data_dir / "attachments"
+    att_dir.mkdir(exist_ok=True)
+
+    if not tender.data_dir:
+        tender.data_dir = str(data_dir)
+
+    # Get existing filenames for duplicate detection
+    existing_result = await db.execute(
+        select(TenderAttachment.filename).where(TenderAttachment.tender_id == tender_id)
+    )
+    existing_names = {row[0] for row in existing_result.all()}
+
+    saved_files: list[Path] = []
+    for f in files:
+        safe_name = _sanitize_filename(f.filename or "attachment")
+        file_path = att_dir / safe_name
+
+        # Skip duplicates
+        if safe_name in existing_names:
+            logger.info(f"[Upload] Pominięto duplikat: {safe_name}")
+            continue
+
+        content = await f.read()
+        file_path.write_bytes(content)
+        saved_files.append(file_path)
+        logger.info(f"[Upload] Zapisano: {safe_name} ({len(content)} B)")
+
+    # Extract ZIP files
+    extracted = _extract_zip_files(saved_files, att_dir)
+    if extracted:
+        saved_files.extend(extracted)
+        logger.info(f"[Upload] Wyekstrahowano {len(extracted)} plików z ZIP-ów")
+
+    # Register in DB (skip duplicates)
+    new_attachments = []
+    for fp in saved_files:
+        if fp.name in existing_names:
+            logger.info(f"[Upload] Pominięto duplikat (z ZIP): {fp.name}")
+            continue
+        if not fp.exists():
+            continue
+
+        att = TenderAttachment(
+            tender_id=tender_id,
+            filename=fp.name,
+            file_path=str(fp.relative_to(data_dir)),
+            file_size_bytes=fp.stat().st_size,
+            mime_type=_guess_mime(fp.name),
+        )
+        db.add(att)
+        new_attachments.append(att)
+        existing_names.add(fp.name)
+
+    await db.commit()
+    for att in new_attachments:
+        await db.refresh(att)
+
+    logger.info(f"[Upload] Dodano {len(new_attachments)} nowych załączników do tender_id={tender_id}")
+    return new_attachments
 
 
 @router.get("/{tender_id}/attachments", response_model=list[TenderAttachmentOut])

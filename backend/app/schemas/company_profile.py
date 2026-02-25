@@ -62,6 +62,9 @@ class CompanyProfileBase(BaseModel):
     annual_revenue_pln: int | None = None
     bank_account: str | None = None
     contact_person: str | None = None
+    legal_form: str | None = None
+    company_since_year: int | None = None
+    has_electronic_signature: bool = False
 
 
 class CompanyProfileUpdate(CompanyProfileBase):

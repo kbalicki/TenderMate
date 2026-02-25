@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { listTenders, deleteTender, type TenderListParams } from '@/api/tenders'
-import { startAnalysis } from '@/api/analysis'
+import { startAnalysis, restartAnalysis } from '@/api/analysis'
 import type { TenderListItem, PaginatedTenders } from '@/types/tender'
-import { statusLabels, getStatusLabel, getStatusColor } from '@/composables/useStatusLabels'
+import { statusLabels, getStatusLabel, getStatusColor, getDisplayStatus, isDeadlineExpired } from '@/composables/useStatusLabels'
 
 const data = ref<PaginatedTenders | null>(null)
 const loading = ref(true)
@@ -17,8 +17,52 @@ const page = ref(1)
 const pageSize = ref(25)
 
 let searchTimeout: ReturnType<typeof setTimeout> | null = null
+let pollTimer: ReturnType<typeof setInterval> | null = null
+const PROCESSING_STATUSES = ['new', 'scraping', 'analyzing', 'running']
 
-onMounted(load)
+const hasProcessingItems = computed(() => {
+  if (!data.value) return false
+  return data.value.items.some(t => PROCESSING_STATUSES.includes(t.status))
+})
+
+function isProcessing(status: string): boolean {
+  return PROCESSING_STATUSES.includes(status)
+}
+
+onMounted(async () => {
+  await load()
+  startPolling()
+})
+
+onUnmounted(() => {
+  stopPolling()
+})
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    if (hasProcessingItems.value) {
+      try {
+        const params: TenderListParams = {
+          page: page.value,
+          page_size: pageSize.value,
+          sort_by: sortBy.value,
+          sort_dir: sortDir.value,
+        }
+        if (statusFilter.value) params.status = statusFilter.value
+        if (searchQuery.value.trim()) params.search = searchQuery.value.trim()
+        data.value = await listTenders(params)
+      } catch { /* ignore polling errors */ }
+    }
+  }, 5000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
 
 async function load() {
   loading.value = true
@@ -102,6 +146,11 @@ const analyzableSelected = computed(() => {
   return data.value.items.filter(t => selectedIds.value.has(t.id) && t.status === 'scraped')
 })
 
+const reanalyzableSelected = computed(() => {
+  if (!data.value) return []
+  return data.value.items.filter(t => selectedIds.value.has(t.id) && ['completed', 'rejected', 'waiting_user', 'analyzing'].includes(t.status))
+})
+
 const deletableSelected = computed(() => {
   if (!data.value) return []
   return data.value.items.filter(t => selectedIds.value.has(t.id))
@@ -115,6 +164,22 @@ async function bulkStartAnalysis() {
   try {
     for (const t of items) {
       try { await startAnalysis(t.id) } catch { /* continue */ }
+    }
+    selectedIds.value = new Set()
+    await load()
+  } finally {
+    bulkRunning.value = false
+  }
+}
+
+async function bulkRestartAnalysis() {
+  const items = reanalyzableSelected.value
+  if (items.length === 0) return
+  if (!confirm(`Ponowić analizę dla ${items.length} przetargów?`)) return
+  bulkRunning.value = true
+  try {
+    for (const t of items) {
+      try { await restartAnalysis(t.id) } catch { /* continue */ }
     }
     selectedIds.value = new Set()
     await load()
@@ -152,24 +217,70 @@ function eligibilityBadge(t: TenderListItem): { text: string; class: string; too
   return null
 }
 
-function formatDeadline(d: string | null): string {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('pl-PL')
+function formatDeadline(d: string | null): { date: string; time: string } | null {
+  if (!d) return null
+  const dt = new Date(d)
+  return {
+    date: dt.toLocaleDateString('pl-PL'),
+    time: dt.toLocaleTimeString('pl-PL', { hour: '2-digit', minute: '2-digit' }),
+  }
 }
+
+// Stats
+const stats = computed(() => {
+  if (!data.value) return { total: 0, analyzing: 0, completed: 0, rejected: 0, archived: 0 }
+  const items = data.value.items
+  return {
+    total: data.value.total,
+    analyzing: items.filter(t => ['analyzing', 'running', 'waiting_user'].includes(t.status)).length,
+    completed: items.filter(t => t.status === 'completed').length,
+    rejected: items.filter(t => t.status === 'rejected').length,
+    archived: items.filter(t => isDeadlineExpired(t.submission_deadline) && !['completed', 'rejected'].includes(t.status)).length,
+  }
+})
 </script>
 
 <template>
   <div>
     <div class="flex items-center justify-between mb-4">
-      <h1 class="text-2xl font-bold text-gray-900">Przetargi</h1>
+      <h1 class="text-2xl font-bold text-gray-900">TenderMate</h1>
       <RouterLink to="/tenders/new" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
         + Nowy przetarg
       </RouterLink>
     </div>
 
+    <!-- Stats -->
+    <div v-if="data" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+      <button @click="statusFilter = ''; page = 1; load()"
+        :class="['rounded-lg p-3 text-left transition-colors', !statusFilter ? 'bg-indigo-50 ring-2 ring-indigo-300' : 'bg-white shadow hover:bg-gray-50']">
+        <p class="text-[10px] text-gray-500 uppercase tracking-wide">Wszystkie</p>
+        <p class="text-xl font-bold text-gray-900">{{ stats.total }}</p>
+      </button>
+      <button @click="statusFilter = 'analyzing'; page = 1; load()"
+        :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'analyzing' ? 'bg-blue-50 ring-2 ring-blue-300' : 'bg-white shadow hover:bg-gray-50']">
+        <p class="text-[10px] text-blue-600 uppercase tracking-wide">W analizie</p>
+        <p class="text-xl font-bold text-blue-600">{{ stats.analyzing }}</p>
+      </button>
+      <button @click="statusFilter = 'completed'; page = 1; load()"
+        :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'completed' ? 'bg-green-50 ring-2 ring-green-300' : 'bg-white shadow hover:bg-gray-50']">
+        <p class="text-[10px] text-green-600 uppercase tracking-wide">Zakończone</p>
+        <p class="text-xl font-bold text-green-600">{{ stats.completed }}</p>
+      </button>
+      <button @click="statusFilter = 'rejected'; page = 1; load()"
+        :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'rejected' ? 'bg-red-50 ring-2 ring-red-300' : 'bg-white shadow hover:bg-gray-50']">
+        <p class="text-[10px] text-red-600 uppercase tracking-wide">Odrzucone</p>
+        <p class="text-xl font-bold text-red-600">{{ stats.rejected }}</p>
+      </button>
+      <button @click="statusFilter = 'archived'; page = 1; load()"
+        :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'archived' ? 'bg-orange-50 ring-2 ring-orange-300' : 'bg-white shadow hover:bg-gray-50']">
+        <p class="text-[10px] text-orange-600 uppercase tracking-wide">Archiwalne</p>
+        <p class="text-xl font-bold text-orange-600">{{ stats.archived }}</p>
+      </button>
+    </div>
+
     <!-- Filters -->
     <div class="flex items-center gap-3 mb-4">
-      <select v-model="statusFilter" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm">
+      <select v-model="statusFilter" @change="page = 1; load()" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm">
         <option value="">Wszystkie statusy</option>
         <option v-for="(label, key) in statusLabels" :key="key" :value="key">{{ label }}</option>
       </select>
@@ -193,6 +304,14 @@ function formatDeadline(d: string | null): string {
         class="px-3 py-1 bg-indigo-600 text-white rounded text-xs hover:bg-indigo-700 disabled:opacity-50"
       >
         Uruchom analizę ({{ analyzableSelected.length }})
+      </button>
+      <button
+        v-if="reanalyzableSelected.length > 0"
+        @click="bulkRestartAnalysis"
+        :disabled="bulkRunning"
+        class="px-3 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 disabled:opacity-50"
+      >
+        Ponów analizę ({{ reanalyzableSelected.length }})
       </button>
       <button
         @click="bulkDelete"
@@ -223,6 +342,7 @@ function formatDeadline(d: string | null): string {
             <th class="px-3 py-2 cursor-pointer select-none" @click="toggleSort('contracting_authority')">
               Zamawiający <span class="text-gray-300">{{ sortIcon('contracting_authority') }}</span>
             </th>
+            <th class="px-3 py-2 whitespace-nowrap">Portal</th>
             <th class="px-3 py-2 cursor-pointer select-none whitespace-nowrap" @click="toggleSort('submission_deadline')">
               Termin <span class="text-gray-300">{{ sortIcon('submission_deadline') }}</span>
             </th>
@@ -252,7 +372,7 @@ function formatDeadline(d: string | null): string {
               </RouterLink>
               <p v-if="t.ai_summary" class="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{{ t.ai_summary }}</p>
               <p v-if="t.error_message" class="text-[10px] text-red-500 truncate mt-0.5" :title="t.error_message">
-                ⚠ {{ t.error_message }}
+                {{ t.error_message }}
               </p>
               <p v-if="t.reference_number && !t.ai_summary" class="text-[10px] text-gray-400 truncate">{{ t.reference_number }}</p>
             </td>
@@ -266,15 +386,30 @@ function formatDeadline(d: string | null): string {
               </div>
             </td>
 
+            <!-- Portal -->
+            <td class="px-3 py-2 text-[10px] text-gray-500 whitespace-nowrap">
+              {{ t.portal_name || '—' }}
+            </td>
+
             <!-- Deadline -->
             <td class="px-3 py-2 whitespace-nowrap" :class="t.submission_deadline && new Date(t.submission_deadline) < new Date() ? 'text-red-500' : 'text-gray-600'">
-              {{ formatDeadline(t.submission_deadline) }}
+              <template v-if="formatDeadline(t.submission_deadline)">
+                <span>{{ formatDeadline(t.submission_deadline)!.date }}</span>
+                <span class="block text-[10px] opacity-60">{{ formatDeadline(t.submission_deadline)!.time }}</span>
+              </template>
+              <span v-else>—</span>
             </td>
 
             <!-- Status -->
             <td class="px-3 py-2">
-              <span :class="['text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap font-medium', getStatusColor(t.status)]">
-                {{ getStatusLabel(t.status) }}
+              <span class="inline-flex items-center gap-1">
+                <svg v-if="isProcessing(t.status)" class="animate-spin h-3 w-3 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span :class="['text-[10px] px-1.5 py-0.5 rounded-full whitespace-nowrap font-medium', getStatusColor(getDisplayStatus(t.status, t.submission_deadline))]">
+                  {{ getStatusLabel(getDisplayStatus(t.status, t.submission_deadline)) }}
+                </span>
               </span>
             </td>
 

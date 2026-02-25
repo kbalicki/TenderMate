@@ -193,6 +193,23 @@ async def fix_eligibility(
     return analysis
 
 
+@router.post("/cancel", response_model=AnalysisOut)
+async def cancel_analysis(
+    tender_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Analysis).where(Analysis.tender_id == tender_id)
+    )
+    analysis = result.scalar_one_or_none()
+    if not analysis:
+        raise HTTPException(404, "Analysis not found")
+
+    await analysis_service.cancel_analysis(analysis.id)
+    await db.refresh(analysis)
+    return analysis
+
+
 @router.post("/decision", response_model=AnalysisOut)
 async def submit_decision(
     tender_id: int,

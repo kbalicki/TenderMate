@@ -35,6 +35,16 @@ export async function submitDecision(tenderId: number, decision: 'go' | 'no_go')
   return data
 }
 
+export async function restartAnalysis(tenderId: number): Promise<Analysis> {
+  const { data } = await api.post(`/tenders/${tenderId}/analysis/restart`)
+  return data
+}
+
+export async function cancelAnalysis(tenderId: number): Promise<Analysis> {
+  const { data } = await api.post(`/tenders/${tenderId}/analysis/cancel`)
+  return data
+}
+
 export async function continueAnalysis(tenderId: number): Promise<Analysis> {
   const { data } = await api.post(`/tenders/${tenderId}/analysis/continue`)
   return data

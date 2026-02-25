@@ -2,11 +2,13 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { createFromUrl, createManual } from '@/api/tenders'
+import type { UrlImportResult } from '@/api/tenders'
 
 const router = useRouter()
 const mode = ref<'url' | 'manual'>('url')
 const loading = ref(false)
 const errorMsg = ref('')
+const importResults = ref<UrlImportResult[]>([])
 
 // URL mode
 const urlText = ref('')
@@ -22,9 +24,28 @@ async function submitUrl() {
   if (!urls.length) return
   loading.value = true
   errorMsg.value = ''
+  importResults.value = []
   try {
-    const tender = await createFromUrl(urls)
-    router.push(`/tenders/${tender.id}`)
+    const response = await createFromUrl(urls)
+    importResults.value = response.results
+
+    const created = response.results.filter(r => r.status === 'created')
+    const duplicates = response.results.filter(r => r.status === 'duplicate')
+
+    // If single URL created, redirect to it
+    if (created.length === 1 && duplicates.length === 0) {
+      router.push(`/tenders/${created[0].tender_id}`)
+      return
+    }
+
+    // If all duplicates, show message
+    if (created.length === 0) {
+      errorMsg.value = 'Wszystkie przetargi już istnieją w bazie.'
+      return
+    }
+
+    // Mixed results — stay on page and show results
+    // (importResults will be rendered in template)
   } catch (err: any) {
     errorMsg.value = err?.response?.data?.detail || err?.message || 'Nie udało się utworzyć przetargu. Sprawdź czy backend działa.'
   } finally {
@@ -94,6 +115,27 @@ function removeFile(index: number) {
     <!-- Error message -->
     <div v-if="errorMsg" class="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
       {{ errorMsg }}
+    </div>
+
+    <!-- Import results -->
+    <div v-if="importResults.length > 0" class="mb-4 space-y-2">
+      <div v-for="r in importResults" :key="r.url"
+        :class="[
+          'px-4 py-3 rounded-lg text-sm flex items-center justify-between',
+          r.status === 'created' ? 'bg-green-50 border border-green-200 text-green-800' : 'bg-yellow-50 border border-yellow-200 text-yellow-800'
+        ]">
+        <div>
+          <span class="font-medium">{{ r.status === 'created' ? 'Dodano' : 'Duplikat' }}:</span>
+          <span class="ml-1 font-mono text-xs">{{ r.url.length > 80 ? r.url.slice(0, 80) + '...' : r.url }}</span>
+          <span v-if="r.message" class="ml-1 text-xs opacity-75">({{ r.message }})</span>
+        </div>
+        <RouterLink :to="`/tenders/${r.tender_id}`" class="text-xs font-medium underline hover:no-underline whitespace-nowrap ml-2">
+          Otwórz #{{ r.tender_id }}
+        </RouterLink>
+      </div>
+      <button @click="importResults = []; urlText = ''" class="text-xs text-indigo-600 hover:text-indigo-800 underline">
+        Dodaj kolejne
+      </button>
     </div>
 
     <!-- URL mode -->

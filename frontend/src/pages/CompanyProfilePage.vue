@@ -43,6 +43,7 @@ const projectForm = ref<Omit<PortfolioProject, 'id'>>(emptyProject())
 const editingProjectId = ref<number | null>(null)
 const showProjectForm = ref(false)
 const techInput = ref('')
+const companyTechInput = ref('')
 
 onMounted(async () => {
   profile.value = await getProfile()
@@ -243,6 +244,19 @@ function addTech() {
           <label class="block text-sm font-medium text-gray-700 mb-1">Nr konta (wadium)</label>
           <input v-model="profile.bank_account" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Forma prawna</label>
+          <input v-model="profile.legal_form" placeholder="np. JDG, sp. z o.o." class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Rok zalozenia</label>
+          <input v-model.number="profile.company_since_year" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div class="flex items-center gap-3">
+          <label class="block text-sm font-medium text-gray-700">Podpis elektroniczny</label>
+          <input v-model="profile.has_electronic_signature" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-indigo-600" />
+          <span class="text-xs text-gray-500">{{ profile.has_electronic_signature ? 'Aktywny' : 'Brak' }}</span>
+        </div>
       </div>
 
       <div>
@@ -257,6 +271,38 @@ function addTech() {
       <div>
         <label class="block text-sm font-medium text-gray-700 mb-1">Opis firmy</label>
         <textarea v-model="profile.description" rows="4" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"></textarea>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Technologie</label>
+        <div class="flex gap-2 mb-2">
+          <input v-model="companyTechInput" @keyup.enter="() => { if (profile && companyTechInput.trim()) { profile.technologies.push(companyTechInput.trim()); companyTechInput = '' } }" placeholder="Dodaj technologie i nacisnij Enter" class="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm" />
+          <button @click="() => { if (profile && companyTechInput.trim()) { profile.technologies.push(companyTechInput.trim()); companyTechInput = '' } }" class="px-3 py-2 bg-gray-200 rounded-lg text-sm hover:bg-gray-300">+</button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <span
+            v-for="(tech, i) in profile.technologies"
+            :key="i"
+            class="bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded-full flex items-center gap-1"
+          >
+            {{ tech }}
+            <button @click="profile.technologies.splice(i, 1)" class="hover:text-red-600">&times;</button>
+          </span>
+        </div>
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Certyfikaty</label>
+        <div class="flex flex-wrap gap-2">
+          <span
+            v-for="(cert, i) in profile.certifications"
+            :key="i"
+            class="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full flex items-center gap-1"
+          >
+            {{ cert }}
+            <button @click="profile.certifications.splice(i, 1)" class="hover:text-red-600">&times;</button>
+          </span>
+        </div>
       </div>
     </div>
 

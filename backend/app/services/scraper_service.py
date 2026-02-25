@@ -96,6 +96,83 @@ def _extract_filename_from_cd(content_disposition: str) -> str | None:
     return None
 
 
+def _decode_zip_filename(member: 'zipfile.ZipInfo') -> str:
+    """Decode ZIP member filename handling Polish encoding (cp852/cp437)."""
+    raw = member.filename
+    # If flag_bits bit 11 is set, filename is UTF-8
+    if member.flag_bits & 0x800:
+        return Path(raw).name
+    # Try cp852 (DOS Polish), then cp437 (DOS default)
+    try:
+        return Path(raw.encode('cp437').decode('cp852')).name
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        pass
+    return Path(raw).name
+
+
+def _extract_zip_files(downloaded_files: list[Path], att_dir: Path, max_depth: int = 3) -> list[Path]:
+    """Extract files from ZIP archives among downloaded attachments.
+
+    Handles nested ZIPs recursively up to max_depth levels.
+    """
+    import zipfile
+
+    extracted: list[Path] = []
+    zips_to_process = [f for f in downloaded_files if f.suffix.lower() == '.zip']
+
+    depth = 0
+    while zips_to_process and depth < max_depth:
+        depth += 1
+        next_round_zips: list[Path] = []
+
+        for zip_path in zips_to_process:
+            if not zip_path.exists() or not zipfile.is_zipfile(zip_path):
+                continue
+
+            try:
+                with zipfile.ZipFile(zip_path, 'r') as zf:
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        # Skip hidden/system files
+                        basename = _decode_zip_filename(member)
+                        if basename.startswith('.') or basename.startswith('__'):
+                            continue
+
+                        safe_name = _sanitize_filename(basename)
+                        target = att_dir / safe_name
+                        # Avoid overwriting
+                        if target.exists():
+                            stem, suffix = target.stem, target.suffix
+                            for n in range(1, 100):
+                                target = att_dir / f"{stem}_{n}{suffix}"
+                                if not target.exists():
+                                    break
+
+                        target.write_bytes(zf.read(member.filename))
+                        extracted.append(target)
+                        logger.info(
+                            f"[Scraper] ZIP extract (depth={depth}): "
+                            f"{zip_path.name} → {safe_name} ({member.file_size} B)"
+                        )
+
+                        # Queue nested ZIPs for next round
+                        if target.suffix.lower() == '.zip':
+                            next_round_zips.append(target)
+
+                # Remove the ZIP file itself — contents are now extracted
+                if zip_path in downloaded_files:
+                    downloaded_files.remove(zip_path)
+                zip_path.unlink()
+                logger.info(f"[Scraper] Usunięto archiwum ZIP: {zip_path.name}")
+            except Exception as e:
+                logger.warning(f"[Scraper] Błąd ekstrakcji ZIP {zip_path.name}: {e}")
+
+        zips_to_process = next_round_zips
+
+    return extracted
+
+
 async def _download_attachment(
     client: httpx.AsyncClient,
     att: dict,
@@ -105,32 +182,39 @@ async def _download_attachment(
     """Download a single attachment file."""
     url = att.get("url", "")
     name = att.get("name", "")
-    if not url:
+    pre_downloaded = att.get("_content")  # pre-downloaded bytes (e.g. BZP PDF)
+
+    if not url and not pre_downloaded:
         return None
 
     try:
-        # Build cookie header from scraped cookies (dict: {name: value})
-        headers = {}
-        if cookies:
-            cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
-            headers["Cookie"] = cookie_header
-
-        resp = await client.get(url, headers=headers, follow_redirects=True, timeout=120.0)
-        if resp.status_code >= 400:
-            logger.warning(f"[Scraper] HTTP {resp.status_code} pobierając {name or url[-50:]}")
-            return None
-
-        # Try to get proper filename from Content-Disposition header
-        cd = resp.headers.get("content-disposition", "")
-        cd_filename = _extract_filename_from_cd(cd)
-        if cd_filename:
-            filename = _sanitize_filename(cd_filename)
-        elif name:
-            filename = _sanitize_filename(name)
+        if pre_downloaded:
+            content = pre_downloaded
+            filename = _sanitize_filename(name) if name else "attachment"
         else:
-            filename = _sanitize_filename(
-                urllib.parse.unquote(url.split("/")[-1].split("?")[0]) or "attachment"
-            )
+            # Build cookie header from scraped cookies (dict: {name: value})
+            headers = {}
+            if cookies:
+                cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+                headers["Cookie"] = cookie_header
+
+            resp = await client.get(url, headers=headers, follow_redirects=True, timeout=120.0)
+            if resp.status_code >= 400:
+                logger.warning(f"[Scraper] HTTP {resp.status_code} pobierając {name or url[-50:]}")
+                return None
+            content = resp.content
+
+            # Try to get proper filename from Content-Disposition header
+            cd = resp.headers.get("content-disposition", "")
+            cd_filename = _extract_filename_from_cd(cd)
+            if cd_filename:
+                filename = _sanitize_filename(cd_filename)
+            elif name:
+                filename = _sanitize_filename(name)
+            else:
+                filename = _sanitize_filename(
+                    urllib.parse.unquote(url.split("/")[-1].split("?")[0]) or "attachment"
+                )
 
         file_path = att_dir / filename
         # Avoid overwriting
@@ -141,8 +225,8 @@ async def _download_attachment(
                 if not file_path.exists():
                     break
 
-        file_path.write_bytes(resp.content)
-        logger.info(f"[Scraper] Pobrano: {filename} ({len(resp.content)} B)")
+        file_path.write_bytes(content)
+        logger.info(f"[Scraper] Pobrano: {filename} ({len(content)} B)")
         return file_path
     except Exception as e:
         logger.warning(f"[Scraper] Błąd pobierania {name or url[-50:]}: {e}")
@@ -226,11 +310,13 @@ async def _generate_ai_summary(tender_id: int) -> None:
             # Use first 5000 chars + title for summary
             text_excerpt = tender.tender_text[:5000]
             prompt = (
-                f"Na podstawie poniższego opisu przetargu napisz ZWIĘZŁE podsumowanie w 2-3 zdaniach po polsku. "
-                f"Napisz CO jest przedmiotem zamówienia, dla KOGO (zamawiający), jaka jest SKALA (budżet/wartość jeśli podana). "
-                f"Tylko suche fakty, bez opinii. Odpowiedz SAMYM TEKSTEM, bez JSON.\n\n"
-                f"Tytuł: {tender.title or 'brak'}\n"
-                f"Zamawiający: {tender.contracting_authority or 'brak'}\n\n"
+                f"Na podstawie poniższego opisu przetargu napisz ZWIĘZŁE podsumowanie w 1-2 zdaniach po polsku. "
+                f"Opisz KONKRETNIE co trzeba zrobić/dostarczyć — samo meritum projektu, np. "
+                f"'Stworzenie aplikacji mobilnej do zarządzania flotą pojazdów z integracją GPS i systemem raportowania.' "
+                f"NIE pisz kto jest zamawiającym, NIE pisz o terminach, NIE zaczynaj od 'Przedmiotem zamówienia jest...'. "
+                f"Pisz wprost, jakbyś opowiadał komuś w jednym zdaniu o czym jest ten projekt. "
+                f"Odpowiedz SAMYM TEKSTEM, bez JSON.\n\n"
+                f"Tytuł: {tender.title or 'brak'}\n\n"
                 f"{text_excerpt}"
             )
 
@@ -350,6 +436,12 @@ async def _run_scraping(tender_id: int) -> None:
 
     logger.info(f"[Scraper] Pobrano {len(downloaded_files)}/{len(attachments)} załączników")
 
+    # Extract ZIP archives and add contained files
+    extracted_files = _extract_zip_files(downloaded_files, att_dir)
+    if extracted_files:
+        downloaded_files.extend(extracted_files)
+        logger.info(f"[Scraper] Wyodrębniono {len(extracted_files)} plików z archiwów ZIP")
+
     # Collect warnings about missing data
     scrape_warnings: list[str] = []
     if not scraped_text.strip():
@@ -417,17 +509,19 @@ async def _run_scraping(tender_id: int) -> None:
                 deadline = match.group(1).strip()
                 break
 
-    tender_title = ""
-    for pattern in [
-        r'(?:Nazwa post[ęe]powania|Nazwa zam[óo]wienia)[:\s]*([^\n]{5,250})',
-        # Baza Konkurencyjności: "Zapytanie ofertowe nr ... na ..."
-        r'(Zapytanie ofertowe\s+nr\s+[^\n]{5,200})',
-        r'(?:Przedmiot(?:em)?\s+zam[óo]wienia)(?:\s+jest)?[:\s]+([^\n]{5,250})',
-    ]:
-        match = re.search(pattern, scraped_text)
-        if match:
-            tender_title = match.group(1).strip()
-            break
+    # For dedicated scrapers (ezamowienia, logintrade), trust their title directly
+    tender_title = scraped_title if (is_ezamowienia or is_logintrade) else ""
+    if not tender_title:
+        for pattern in [
+            r'(?:Nazwa post[ęe]powania|Nazwa zam[óo]wienia)[:\s]*([^\n]{5,250})',
+            # Baza Konkurencyjności: "Zapytanie ofertowe nr ... na ..."
+            r'(Zapytanie ofertowe\s+nr\s+[^\n]{5,200})',
+            r'(?:Przedmiot(?:em)?\s+zam[óo]wienia)(?:\s+jest)?[:\s]+([^\n]{5,250})',
+        ]:
+            match = re.search(pattern, scraped_text)
+            if match:
+                tender_title = match.group(1).strip()
+                break
     if not tender_title:
         tender_title = scraped_title
 
@@ -457,6 +551,7 @@ async def _run_scraping(tender_id: int) -> None:
         tender.portal_name = detect_portal(url)
         tender.title = tender_title or tender.title
         tender.contracting_authority = authority or None
+        tender.authority_type = _detect_authority_type(authority, url)
         tender.reference_number = ref_number or None
         tender.tender_text = _clean_scraped_text(scraped_text)
 
@@ -507,13 +602,18 @@ async def _run_scraping(tender_id: int) -> None:
 
 async def launch_scraping(tender_id: int) -> None:
     """Launch scraping as a background asyncio task."""
+    from app.services.concurrency import acquire, release
+
     logger.info(f"[Scraper] Uruchamiam task scrapingu dla tender_id={tender_id}")
 
     async def _wrapped():
+        await acquire()
         try:
             await _run_scraping(tender_id)
         except Exception:
             logger.exception(f"[Scraper] Nieobsłużony wyjątek w scrapingu tender_id={tender_id}")
+        finally:
+            release()
 
     task = asyncio.create_task(_wrapped())
     _background_tasks.add(task)

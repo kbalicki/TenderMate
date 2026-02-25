@@ -43,6 +43,10 @@ class CompanyProfile(Base):
     bank_account: Mapped[str | None] = mapped_column(String(100))
     contact_person: Mapped[str | None] = mapped_column(String(255))
 
+    legal_form: Mapped[str | None] = mapped_column(String(100))  # JDG, sp. z o.o., S.A.
+    company_since_year: Mapped[int | None] = mapped_column(Integer)
+    has_electronic_signature: Mapped[bool] = mapped_column(default=False)
+
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         default=datetime.utcnow, onupdate=datetime.utcnow

@@ -98,13 +98,64 @@ def _build_company_context(profile: CompanyProfile) -> str:
 
 
 async def enrich_profile_from_text(text: str, add_to_portfolio: bool = False) -> None:
-    """Use Claude to extract structured data from user text and add to company profile."""
+    """Use Claude to extract structured data from user text and add to company profile.
+
+    Includes existing profile data as context so AI can detect duplicates and
+    suggest updates to existing entries rather than creating new ones.
+    """
     from app.models.company_profile import CompanyProfile
     from app.models.team_member import TeamMember
     from app.models.portfolio_project import PortfolioProject
 
+    # First, fetch existing profile data for deduplication context
+    async with async_session() as db:
+        from sqlalchemy.orm import selectinload
+        res = await db.execute(
+            select(CompanyProfile).options(
+                selectinload(CompanyProfile.team_members),
+                selectinload(CompanyProfile.portfolio_projects),
+            ).where(CompanyProfile.user_id == 1)
+        )
+        profile = res.scalar_one_or_none()
+        if not profile:
+            return
+
+    # Build context of existing data for deduplication
+    existing_projects = []
+    for p in profile.portfolio_projects:
+        existing_projects.append({
+            "id": p.id,
+            "project_name": p.project_name,
+            "client_name": p.client_name,
+            "description": (p.description or "")[:200],
+        })
+    existing_members = []
+    for m in profile.team_members:
+        existing_members.append({
+            "id": m.id,
+            "full_name": m.full_name,
+            "role": m.role,
+            "qualifications": (m.qualifications or "")[:200],
+        })
+    existing_techs = profile.technologies or []
+    existing_certs = profile.certifications or []
+
     prompt = f"""Na podstawie poniższego tekstu użytkownika wyciągnij dane firmy.
 Tekst może opisywać: projekt (referencję), osobę w zespole, certyfikat, technologię, lub ogólne informacje o firmie.
+
+WAŻNE: Poniżej podaję ISTNIEJĄCE dane firmy. Sprawdź czy tekst użytkownika nie dotyczy czegoś co JUŻ JEST w profilu.
+- Jeśli projekt/osoba/technologia już istnieje — ustaw action="update" i podaj id istniejącego elementu.
+- Jeśli to coś nowego — ustaw action="add".
+- NIE DUPLIKUJ istniejących danych.
+
+ISTNIEJĄCE PROJEKTY PORTFOLIO:
+{json.dumps(existing_projects, ensure_ascii=False)}
+
+ISTNIEJĄCY ZESPÓŁ:
+{json.dumps(existing_members, ensure_ascii=False)}
+
+ISTNIEJĄCE TECHNOLOGIE: {json.dumps(existing_techs, ensure_ascii=False)}
+ISTNIEJĄCE CERTYFIKATY: {json.dumps(existing_certs, ensure_ascii=False)}
 
 Tekst użytkownika:
 {text}
@@ -113,6 +164,8 @@ Odpowiedz TYLKO jako JSON:
 {{
   "portfolio_projects": [
     {{
+      "action": "add" lub "update",
+      "existing_id": null lub id istniejącego projektu,
       "project_name": "nazwa projektu",
       "client_name": "nazwa klienta lub null",
       "description": "opis projektu",
@@ -124,6 +177,8 @@ Odpowiedz TYLKO jako JSON:
   ],
   "team_members": [
     {{
+      "action": "add" lub "update",
+      "existing_id": null lub id istniejącego członka,
       "full_name": "imię i nazwisko",
       "role": "rola",
       "experience_years": null,
@@ -136,9 +191,10 @@ Odpowiedz TYLKO jako JSON:
   "description_addition": "tekst do dopisania do opisu firmy lub null"
 }}
 
-Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice dla reszty."""
+Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice dla reszty.
+Dla technologies i certifications podaj TYLKO te, których NIE MA jeszcze w profilu."""
 
-    result = _safe_result(await call_claude(prompt, system_prompt="Wyciągnij dane z tekstu. Zwróć TYLKO JSON."))
+    result = _safe_result(await call_claude(prompt, system_prompt="Wyciągnij dane z tekstu. Sprawdź duplikaty. Zwróć TYLKO JSON."))
 
     async with async_session() as db:
         from sqlalchemy.orm import selectinload
@@ -152,10 +208,34 @@ Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice
         if not profile:
             return
 
-        # Add portfolio projects
-        if add_to_portfolio:
-            for proj in result.get("portfolio_projects", []):
-                if proj.get("project_name"):
+        # Handle portfolio projects (update existing always, add new only if add_to_portfolio)
+        for proj in result.get("portfolio_projects", []):
+            if not proj.get("project_name"):
+                continue
+            action = proj.get("action", "add")
+            existing_id = proj.get("existing_id")
+
+            if action == "update" and existing_id:
+                # Update existing project — always allowed (no need for add_to_portfolio flag)
+                existing = next((p for p in profile.portfolio_projects if p.id == existing_id), None)
+                if existing:
+                    if proj.get("description"):
+                        existing.description = proj["description"]
+                    if proj.get("client_name"):
+                        existing.client_name = proj["client_name"]
+                    if proj.get("contract_value_pln"):
+                        existing.contract_value_pln = proj["contract_value_pln"]
+                    if proj.get("year_started"):
+                        existing.year_started = proj["year_started"]
+                    if proj.get("year_completed"):
+                        existing.year_completed = proj["year_completed"]
+                    if proj.get("technologies_used"):
+                        existing.technologies_used = proj["technologies_used"]
+                    logger.info(f"[Profile] Zaktualizowano projekt: {existing.project_name}")
+            elif add_to_portfolio:
+                # Add new project — only when checkbox is checked
+                existing_names = [p.project_name.lower() for p in profile.portfolio_projects]
+                if proj["project_name"].lower() not in existing_names:
                     db.add(PortfolioProject(
                         company_profile_id=profile.id,
                         project_name=proj["project_name"],
@@ -167,9 +247,26 @@ Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice
                         technologies_used=proj.get("technologies_used", []),
                     ))
 
-        # Add team members
+        # Handle team members (add or update)
         for member in result.get("team_members", []):
-            if member.get("full_name"):
+            if not member.get("full_name"):
+                continue
+            action = member.get("action", "add")
+            existing_id = member.get("existing_id")
+
+            if action == "update" and existing_id:
+                existing = next((m for m in profile.team_members if m.id == existing_id), None)
+                if existing:
+                    if member.get("role"):
+                        existing.role = member["role"]
+                    if member.get("experience_years"):
+                        existing.experience_years = member["experience_years"]
+                    if member.get("qualifications"):
+                        existing.qualifications = member["qualifications"]
+                    if member.get("bio"):
+                        existing.bio = member["bio"]
+                    logger.info(f"[Profile] Zaktualizowano członka zespołu: {existing.full_name}")
+            else:
                 existing_names = [m.full_name.lower() for m in profile.team_members]
                 if member["full_name"].lower() not in existing_names:
                     db.add(TeamMember(
@@ -181,7 +278,7 @@ Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice
                         bio=member.get("bio"),
                     ))
 
-        # Add technologies
+        # Add technologies (AI already filters out existing ones)
         new_techs = result.get("technologies", [])
         if new_techs and isinstance(profile.technologies, list):
             existing = [t.lower() for t in profile.technologies]
@@ -189,7 +286,7 @@ Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice
                 if tech and tech.lower() not in existing:
                     profile.technologies = [*profile.technologies, tech]
 
-        # Add certifications
+        # Add certifications (AI already filters out existing ones)
         new_certs = result.get("certifications", [])
         if new_certs and isinstance(profile.certifications, list):
             existing = [c.lower() for c in profile.certifications]
@@ -209,13 +306,26 @@ Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice
 
 
 def _get_attachment_files(tender: Tender) -> list[Path]:
-    """Get all attachment file paths for a tender."""
+    """Get all attachment file paths for a tender.
+
+    ZIP files are auto-extracted in-place (recursively) so their contents can be analysed.
+    """
     if not tender.data_dir:
         return []
     att_dir = Path(tender.data_dir) / "attachments"
     if not att_dir.exists():
         return []
-    return [f for f in att_dir.iterdir() if f.is_file()]
+
+    # Use scraper_service's robust ZIP extraction (recursive, Polish encoding)
+    from app.services.scraper_service import _extract_zip_files, _sanitize_filename
+    all_files = [f for f in att_dir.iterdir() if f.is_file()]
+    extracted = _extract_zip_files(all_files, att_dir)
+    if extracted:
+        logger.info(f"[Attachments] Wyekstrahowano {len(extracted)} plików z ZIP-ów")
+
+    result = [f for f in att_dir.iterdir() if f.is_file()]
+    logger.info(f"[Attachments] Znaleziono {len(result)} plików: {[f.name for f in result]}")
+    return result
 
 
 SYSTEM_PROMPT = (
@@ -781,15 +891,96 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
             await db.refresh(profile, ["team_members", "portfolio_projects"])
             logger.info(f"[Analysis {analysis_id}] Auto-utworzono pusty profil firmy")
 
+        # Step descriptions for progress reporting
+        _STEP_DESCRIPTIONS = {
+            0: {
+                "label": "Warunki udziału",
+                "phases": [
+                    "Czytam dokumenty przetargowe...",
+                    "Sprawdzam wymagania formalne (koncesje, uprawnienia)...",
+                    "Weryfikuję doświadczenie firmy vs wymagania...",
+                    "Analizuję warunki kadrowe i finansowe...",
+                    "Oceniam spełnienie warunków...",
+                ],
+            },
+            1: {
+                "label": "Zakres i wymagania",
+                "phases": [
+                    "Analizuję SWZ i OPZ...",
+                    "Wyodrębniam wymagania funkcjonalne...",
+                    "Identyfikuję wymagania niefunkcjonalne...",
+                    "Klasyfikuję priorytety wymagań...",
+                ],
+            },
+            2: {
+                "label": "Rozwiązanie techniczne",
+                "phases": [
+                    "Szukam pasujących rozwiązań open source...",
+                    "Projektuję architekturę techniczną...",
+                    "Oceniam pokrycie wymagań przez technologie...",
+                ],
+            },
+            3: {
+                "label": "Wycena i koszty",
+                "phases": [
+                    "Szacuję pracochłonność...",
+                    "Kalkuluję koszty zespołu i infrastruktury...",
+                    "Przygotowuję kosztorys...",
+                ],
+            },
+            4: {
+                "label": "Analiza ryzyk",
+                "phases": [
+                    "Identyfikuję ryzyka techniczne i formalne...",
+                    "Oceniam prawdopodobieństwo i wpływ...",
+                    "Przygotowuję rekomendację GO/NO-GO...",
+                ],
+            },
+            5: {
+                "label": "Dokumenty ofertowe",
+                "phases": [
+                    "Generuję szablony dokumentów...",
+                    "Przygotowuję instrukcje wypełniania...",
+                    "Tworzę teksty do formularzy...",
+                ],
+            },
+        }
+
+        step_info = _STEP_DESCRIPTIONS.get(step, {"label": f"Krok {step}", "phases": ["Przetwarzam..."]})
+        att_files = _get_attachment_files(tender)
+        att_count = len(att_files)
+
         await _emit(analysis_id, "step_started", {"step": step})
-        logger.info(f"[Analysis {analysis_id}] Rozpoczynam krok {step}, tender_id={analysis.tender_id}")
+        await _emit(analysis_id, "progress", {
+            "step": step,
+            "label": step_info["label"],
+            "phase": step_info["phases"][0],
+            "percent": 0,
+            "attachment_count": att_count,
+        })
+        logger.info(f"[Analysis {analysis_id}] Rozpoczynam krok {step}, tender_id={analysis.tender_id}, załączników={att_count}")
+
+        # Helper to emit progress phases during step execution
+        async def _emit_phase(phase_idx: int) -> None:
+            phases = step_info["phases"]
+            idx = min(phase_idx, len(phases) - 1)
+            pct = int((phase_idx / max(len(phases), 1)) * 80)  # 0-80%, last 20% = saving
+            await _emit(analysis_id, "progress", {
+                "step": step,
+                "label": step_info["label"],
+                "phase": phases[idx],
+                "percent": pct,
+                "attachment_count": att_count,
+            })
 
         try:
             if step == 0:
                 fix_context = None
                 if analysis.step0_fix_actions:
                     fix_context = json.dumps(analysis.step0_fix_actions, ensure_ascii=False)
+                await _emit_phase(1)
                 step_result = await run_step0(tender, profile, fix_context)
+                await _emit_phase(4)
                 logger.info(f"[Analysis {analysis_id}] Krok 0 wynik: eligible={step_result.get('eligible')}")
                 analysis.step0_result = step_result
                 eligible = step_result.get("eligible", False) if isinstance(step_result, dict) else False
@@ -797,19 +988,25 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
                 analysis.status = "waiting_user"
 
             elif step == 1:
+                await _emit_phase(1)
                 step_result = await run_step1(tender, profile)
+                await _emit_phase(3)
                 logger.info(f"[Analysis {analysis_id}] Krok 1 zakończony")
                 analysis.step1_result = step_result
 
             elif step == 2:
                 prev = {"step1": analysis.step1_result}
+                await _emit_phase(1)
                 step_result = await run_step2(tender, profile, prev)
+                await _emit_phase(2)
                 logger.info(f"[Analysis {analysis_id}] Krok 2 zakończony")
                 analysis.step2_result = step_result
 
             elif step == 3:
                 prev = {"step1": analysis.step1_result, "step2": analysis.step2_result}
+                await _emit_phase(1)
                 step_result = await run_step3(tender, profile, prev)
+                await _emit_phase(2)
                 logger.info(f"[Analysis {analysis_id}] Krok 3 zakończony")
                 analysis.step3_result = step_result
 
@@ -819,7 +1016,9 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
                     "step2": analysis.step2_result,
                     "step3": analysis.step3_result,
                 }
+                await _emit_phase(1)
                 step_result = await run_step4(tender, profile, prev)
+                await _emit_phase(2)
                 logger.info(f"[Analysis {analysis_id}] Krok 4 zakończony")
                 analysis.step4_result = step_result
 
@@ -830,7 +1029,9 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
                     "step3": analysis.step3_result,
                     "step4": analysis.step4_result,
                 }
+                await _emit_phase(1)
                 step_result = await run_step5(tender, profile, prev)
+                await _emit_phase(2)
                 logger.info(f"[Analysis {analysis_id}] Krok 5 zakończony")
                 analysis.step5_result = step_result
 
@@ -853,6 +1054,13 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
             analysis.current_step = step
             await db.commit()
             logger.info(f"[Analysis {analysis_id}] Krok {step} zapisany, status={analysis.status}")
+            await _emit(analysis_id, "progress", {
+                "step": step,
+                "label": step_info["label"],
+                "phase": "Gotowe!",
+                "percent": 100,
+                "attachment_count": att_count,
+            })
             await _emit(analysis_id, "step_completed", {"step": step, "status": analysis.status})
 
         except Exception as e:
@@ -865,27 +1073,61 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
 
 # Keep strong references to background tasks so they don't get GC'd
 _background_tasks: set[asyncio.Task] = set()
+# Track tasks by analysis_id for cancellation
+_analysis_tasks: dict[int, asyncio.Task] = {}
+
+
+async def cancel_analysis(analysis_id: int) -> None:
+    """Cancel a running analysis task and set status back to waiting_user."""
+    task = _analysis_tasks.get(analysis_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info(f"[Analysis {analysis_id}] Task anulowany przez użytkownika")
+
+    # Set status back to waiting_user regardless
+    async with async_session() as db:
+        analysis = await db.get(Analysis, analysis_id)
+        if analysis and analysis.status == "running":
+            analysis.status = "waiting_user"
+            await db.commit()
+            logger.info(f"[Analysis {analysis_id}] Status zmieniony na waiting_user")
 
 
 async def launch_step(analysis_id: int, step: int) -> None:
     """Launch an analysis step as a background asyncio task."""
+    from app.services.concurrency import acquire, release
+
     logger.info(f"[Analysis {analysis_id}] Uruchamiam task dla kroku {step}")
 
     async def _wrapped():
+        await acquire()
         try:
             await _run_analysis_step(analysis_id, step)
+        except asyncio.CancelledError:
+            logger.info(f"[Analysis {analysis_id}] Task kroku {step} został anulowany")
         except Exception:
             logger.exception(f"[Analysis {analysis_id}] Nieobsłużony wyjątek w task kroku {step}")
+        finally:
+            release()
+            _analysis_tasks.pop(analysis_id, None)
+
+    # Cancel any existing task for this analysis
+    old_task = _analysis_tasks.get(analysis_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
 
     task = asyncio.create_task(_wrapped())
     _background_tasks.add(task)
+    _analysis_tasks[analysis_id] = task
     task.add_done_callback(_background_tasks.discard)
 
 
 async def launch_remaining_steps(analysis_id: int, from_step: int) -> None:
     """Run steps sequentially from from_step through 5. Step 6 is user-triggered separately."""
+    from app.services.concurrency import acquire, release
 
     async def _run_sequential():
+        await acquire()
         try:
             for step in range(from_step, 6):
                 async with async_session() as db:
@@ -904,6 +1146,8 @@ async def launch_remaining_steps(analysis_id: int, from_step: int) -> None:
                         return
         except Exception:
             logger.exception(f"[Analysis {analysis_id}] Nieobsłużony wyjątek w launch_remaining_steps")
+        finally:
+            release()
 
     task = asyncio.create_task(_run_sequential())
     _background_tasks.add(task)

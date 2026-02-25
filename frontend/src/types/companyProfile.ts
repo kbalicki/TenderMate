@@ -44,6 +44,9 @@ export interface CompanyProfile {
   annual_revenue_pln: number | null
   bank_account: string | null
   contact_person: string | null
+  legal_form: string | null
+  company_since_year: number | null
+  has_electronic_signature: boolean
   team_members: TeamMember[]
   portfolio_projects: PortfolioProject[]
 }

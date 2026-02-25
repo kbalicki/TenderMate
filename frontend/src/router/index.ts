@@ -5,18 +5,12 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      name: 'dashboard',
-      component: () => import('@/pages/DashboardPage.vue'),
-    },
-    {
-      path: '/company',
-      name: 'company',
-      component: () => import('@/pages/CompanyProfilePage.vue'),
+      name: 'home',
+      component: () => import('@/pages/TenderListPage.vue'),
     },
     {
       path: '/tenders',
-      name: 'tenders',
-      component: () => import('@/pages/TenderListPage.vue'),
+      redirect: '/',
     },
     {
       path: '/tenders/new',
@@ -34,6 +28,16 @@ const router = createRouter({
       name: 'analysis',
       component: () => import('@/pages/AnalysisPage.vue'),
       props: true,
+    },
+    {
+      path: '/company',
+      name: 'company',
+      component: () => import('@/pages/CompanyProfilePage.vue'),
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/pages/SettingsPage.vue'),
     },
   ],
 })

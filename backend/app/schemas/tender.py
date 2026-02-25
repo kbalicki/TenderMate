@@ -20,6 +20,17 @@ class TenderFromUrl(BaseModel):
     urls: list[str]
 
 
+class TenderFromUrlResult(BaseModel):
+    url: str
+    status: str  # "created", "duplicate"
+    tender_id: int
+    message: str | None = None
+
+
+class TenderFromUrlResponse(BaseModel):
+    results: list[TenderFromUrlResult]
+
+
 class TenderOut(BaseModel):
     id: int
     source_type: str

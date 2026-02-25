@@ -175,6 +175,15 @@ async function handleRescrape() {
         >
           Przejdź do analizy
         </RouterLink>
+        <a
+          v-if="tender.source_url && analysisData?.user_decision === 'go'"
+          :href="tender.source_url"
+          target="_blank"
+          class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 flex items-center gap-1.5"
+        >
+          Złóż ofertę
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+        </a>
       </div>
     </div>
 
@@ -202,9 +211,9 @@ async function handleRescrape() {
       <p class="text-sm text-yellow-800">Poprzednia analiza nie powiodła się. Kliknij "Ponów analizę" aby spróbować ponownie.</p>
     </div>
 
-    <!-- AI Summary -->
+    <!-- Podsumowanie -->
     <div v-if="tender.ai_summary" class="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-6">
-      <h3 class="text-xs font-semibold text-indigo-700 uppercase mb-1">Podsumowanie AI</h3>
+      <h3 class="text-xs font-semibold text-indigo-700 uppercase mb-1">Podsumowanie</h3>
       <p class="text-sm text-gray-800">{{ tender.ai_summary }}</p>
     </div>
 
@@ -229,36 +238,50 @@ async function handleRescrape() {
 
       <div class="space-y-4">
         <div class="bg-white rounded-lg shadow p-5">
-          <h3 class="text-sm font-semibold text-gray-900 mb-3">Informacje</h3>
-          <dl class="space-y-2 text-sm">
-            <div>
-              <dt class="text-gray-500">Status</dt>
+          <h3 class="text-sm font-semibold text-gray-900 mb-4">Informacje</h3>
+          <dl class="text-sm divide-y divide-gray-100">
+            <div class="flex justify-between items-center py-2.5">
+              <dt class="text-gray-500 font-medium">Status</dt>
               <dd>
-                <span :class="['text-xs px-2 py-1 rounded-full', getStatusColor(tender.status)]">
+                <span :class="['text-xs px-2 py-1 rounded-full font-medium', getStatusColor(tender.status)]">
                   {{ getStatusLabel(tender.status) }}
                 </span>
               </dd>
             </div>
-            <div v-if="tender.portal_name">
-              <dt class="text-gray-500">Portal</dt>
-              <dd>{{ tender.portal_name }}</dd>
+            <div v-if="tender.contracting_authority" class="py-2.5">
+              <dt class="text-gray-500 font-medium text-xs uppercase tracking-wide mb-0.5">Zamawiający</dt>
+              <dd class="text-gray-900">
+                <span v-if="tender.authority_type === 'public'" class="text-xs mr-1" title="Instytucja publiczna">&#127963;</span>
+                <span v-else-if="tender.authority_type === 'private'" class="text-xs mr-1" title="Firma prywatna">&#127970;</span>
+                {{ tender.contracting_authority }}
+              </dd>
             </div>
-            <div>
-              <dt class="text-gray-500">Źródło</dt>
+            <div v-if="tender.reference_number" class="flex justify-between items-center py-2.5">
+              <dt class="text-gray-500 font-medium">Nr ref.</dt>
+              <dd class="text-gray-900 text-xs font-mono">{{ tender.reference_number }}</dd>
+            </div>
+            <div v-if="tender.submission_deadline" class="flex justify-between items-center py-2.5">
+              <dt class="text-gray-500 font-medium">Termin składania</dt>
+              <dd :class="['font-medium', new Date(tender.submission_deadline) < new Date() ? 'text-red-600' : 'text-gray-900']">
+                {{ new Date(tender.submission_deadline).toLocaleString('pl-PL') }}
+              </dd>
+            </div>
+            <div v-if="tender.portal_name" class="flex justify-between items-center py-2.5">
+              <dt class="text-gray-500 font-medium">Portal</dt>
+              <dd class="text-gray-900">{{ tender.portal_name }}</dd>
+            </div>
+            <div class="py-2.5">
+              <dt class="text-gray-500 font-medium text-xs uppercase tracking-wide mb-0.5">Źródło</dt>
               <dd v-if="tender.source_type === 'url'" class="break-all text-xs">
                 <a :href="tender.source_url!" target="_blank" class="text-indigo-600 hover:underline">
                   {{ tender.source_url }}
                 </a>
               </dd>
-              <dd v-else>Ręczne wprowadzenie</dd>
+              <dd v-else class="text-gray-900">Ręczne wprowadzenie</dd>
             </div>
-            <div v-if="tender.submission_deadline">
-              <dt class="text-gray-500">Termin składania</dt>
-              <dd>{{ new Date(tender.submission_deadline).toLocaleString('pl-PL') }}</dd>
-            </div>
-            <div>
-              <dt class="text-gray-500">Utworzono</dt>
-              <dd>{{ new Date(tender.created_at).toLocaleString('pl-PL') }}</dd>
+            <div class="flex justify-between items-center py-2.5">
+              <dt class="text-gray-500 font-medium">Utworzono</dt>
+              <dd class="text-gray-600 text-xs">{{ new Date(tender.created_at).toLocaleString('pl-PL') }}</dd>
             </div>
           </dl>
         </div>

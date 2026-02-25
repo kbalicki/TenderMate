@@ -196,15 +196,15 @@ async def call_claude(
         for f in context_files:
             if not f.exists():
                 continue
-            if f.stat().st_size > 2_000_000:
+            if f.stat().st_size > 50_000_000:
                 logger.warning(f"[Claude CLI] Plik {f.name} za duży ({f.stat().st_size} B), pomijam")
                 continue
 
             content = _extract_text_from_file(f)
             if content and len(content.strip()) > 10:
                 # Truncate very long files to avoid prompt overflow
-                if len(content) > 50_000:
-                    content = content[:50_000] + "\n\n[... tekst obcięty, oryginał ma " + str(len(content)) + " znaków]"
+                if len(content) > 100_000:
+                    content = content[:100_000] + "\n\n[... tekst obcięty, oryginał ma " + str(len(content)) + " znaków]"
                 full_prompt += f"\n\n--- PLIK: {f.name} ---\n{content}\n"
             else:
                 logger.warning(f"[Claude CLI] Nie udało się wyekstrahować tekstu z {f.name}")

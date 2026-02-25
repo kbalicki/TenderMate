@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { startAnalysis, getAnalysis, submitDecision, fixEligibility, uploadVerificationDocuments, type CustomFixInput } from '@/api/analysis'
+import { useRouter } from 'vue-router'
+import { startAnalysis, getAnalysis, submitDecision, fixEligibility, cancelAnalysis, uploadVerificationDocuments, type CustomFixInput } from '@/api/analysis'
+import { uploadAttachments, listAttachments, type TenderAttachment } from '@/api/tenders'
 import type {
   Analysis, Step0Result, Step1Result, Step2Result, Step3Result,
   Step4Result, Step5Result, Step6Result, EligibilityCondition
@@ -8,13 +10,33 @@ import type {
 import CopyableText from '@/components/analysis/CopyableText.vue'
 
 const props = defineProps<{ id: string }>()
+const router = useRouter()
 const analysis = ref<Analysis | null>(null)
 const loading = ref(true)
 const error = ref('')
 const sseConnected = ref(false)
 
+// Progress tracking
+const progressInfo = ref<{
+  step: number
+  label: string
+  phase: string
+  percent: number
+  attachment_count: number
+} | null>(null)
+
 // Fix selections for eligibility
 const fixSelections = ref<Record<number, string>>({})
+const customTexts = ref<Record<number, string>>({})
+const addToProfile = ref<Record<number, boolean>>({})
+const addToPortfolio = ref<Record<number, boolean>>({})
+
+// Attachment upload (ZIP support)
+const attachmentFiles = ref<File[]>([])
+const attachmentUploading = ref(false)
+const attachmentDragOver = ref(false)
+const attachmentUploadResult = ref<{ added: number; skipped: number } | null>(null)
+const existingAttachments = ref<TenderAttachment[]>([])
 
 // Verification files
 const verificationFiles = ref<File[]>([])
@@ -46,13 +68,18 @@ function connectSSE() {
   })
   eventSource.addEventListener('step_completed', (e: any) => {
     try { const d = JSON.parse(e.data); activeTab.value = d.step } catch { /* ignore */ }
+    progressInfo.value = null
     refreshAnalysis()
+  })
+  eventSource.addEventListener('progress', (e: any) => {
+    try { progressInfo.value = JSON.parse(e.data) } catch { /* ignore */ }
   })
   eventSource.addEventListener('error', (e: any) => {
     try {
       const data = JSON.parse(e.data)
       error.value = data.message || 'Błąd analizy'
     } catch { /* SSE connection error */ }
+    progressInfo.value = null
     refreshAnalysis()
   })
   eventSource.onerror = () => { sseConnected.value = false }
@@ -62,19 +89,23 @@ async function refreshAnalysis() {
   try { analysis.value = await getAnalysis(tenderId.value) } catch { /* ignore */ }
 }
 
-onMounted(async () => {
+async function loadAnalysis() {
+  loading.value = true
+  error.value = ''
   try {
     analysis.value = await getAnalysis(tenderId.value)
-    if (analysis.value.status === 'running') { connectSSE() }
+    if (analysis.value.status === 'running') { connectSSE(); startPolling() }
   } catch {
     try {
       analysis.value = await startAnalysis(tenderId.value)
-      connectSSE()
+      connectSSE(); startPolling()
     } catch (e: any) {
       error.value = e?.response?.data?.detail || 'Nie udało się uruchomić analizy'
     }
   } finally { loading.value = false }
-})
+}
+
+onMounted(() => { loadAnalysis(); loadExistingAttachments() })
 
 onUnmounted(() => { if (eventSource) eventSource.close(); stopPolling() })
 
@@ -91,6 +122,15 @@ function stopPolling() {
   if (pollInterval) { clearInterval(pollInterval); pollInterval = null }
 }
 
+async function handleQuickReject() {
+  try {
+    await submitDecision(tenderId.value, 'no_go')
+    router.push('/')
+  } catch (e: any) {
+    error.value = e?.response?.data?.detail || 'Błąd odrzucania przetargu'
+  }
+}
+
 async function handleDecision(decision: 'go' | 'no_go') {
   error.value = ''
   try {
@@ -102,8 +142,24 @@ async function handleDecision(decision: 'go' | 'no_go') {
   }
 }
 
+const cancelling = ref(false)
+
+async function handleCancelAnalysis() {
+  cancelling.value = true
+  try {
+    analysis.value = await cancelAnalysis(tenderId.value)
+  } catch (e: any) {
+    error.value = e?.response?.data?.detail || 'Błąd anulowania'
+  } finally {
+    cancelling.value = false
+  }
+}
+
+const fixSaving = ref(false)
+
 async function handleFixEligibility() {
   error.value = ''
+  fixSaving.value = true
   const fixes = Object.entries(fixSelections.value).map(([condIdx, option]) => ({
     condition_index: Number(condIdx),
     chosen_fix: option,
@@ -116,7 +172,7 @@ async function handleFixEligibility() {
       add_to_profile: addToProfile.value[Number(condIdx)] || false,
       add_to_portfolio: addToPortfolio.value[Number(condIdx)] || false,
     }))
-  if (!fixes.length && !customs.length) return
+  if (!fixes.length && !customs.length) { fixSaving.value = false; return }
   try {
     analysis.value = await fixEligibility(tenderId.value, fixes, customs)
     fixSelections.value = {}
@@ -127,6 +183,8 @@ async function handleFixEligibility() {
   } catch (e: any) {
     error.value = e?.response?.data?.detail || 'Błąd ponownego sprawdzenia'
     console.error('handleFixEligibility error:', e)
+  } finally {
+    fixSaving.value = false
   }
 }
 
@@ -203,6 +261,49 @@ async function submitVerification() {
     error.value = e?.response?.data?.detail || 'Błąd wysyłania dokumentów'
   } finally { verificationUploading.value = false }
 }
+
+// Attachment upload handling
+function handleAttachmentDrop(e: DragEvent) {
+  attachmentDragOver.value = false
+  const files = e.dataTransfer?.files
+  if (files) addAttachmentFiles(files)
+}
+function handleAttachmentSelect(e: Event) {
+  const files = (e.target as HTMLInputElement).files
+  if (files) addAttachmentFiles(files)
+}
+function addAttachmentFiles(fileList: FileList) {
+  for (const f of fileList) {
+    // Skip duplicates already in queue
+    if (!attachmentFiles.value.some(af => af.name === f.name && af.size === f.size)) {
+      attachmentFiles.value.push(f)
+    }
+  }
+}
+function removeAttachmentFile(index: number) {
+  attachmentFiles.value.splice(index, 1)
+}
+async function submitAttachments() {
+  if (!attachmentFiles.value.length) return
+  attachmentUploading.value = true
+  attachmentUploadResult.value = null
+  error.value = ''
+  try {
+    const result = await uploadAttachments(tenderId.value, attachmentFiles.value)
+    attachmentUploadResult.value = { added: result.length, skipped: attachmentFiles.value.length - result.length }
+    attachmentFiles.value = []
+    // Refresh attachments list
+    existingAttachments.value = await listAttachments(tenderId.value)
+  } catch (e: any) {
+    error.value = e?.response?.data?.detail || 'Błąd wgrywania plików'
+  } finally { attachmentUploading.value = false }
+}
+
+async function loadExistingAttachments() {
+  try {
+    existingAttachments.value = await listAttachments(tenderId.value)
+  } catch { /* ignore */ }
+}
 </script>
 
 <template>
@@ -218,6 +319,9 @@ async function submitVerification() {
     <div v-if="loading" class="text-center text-gray-400 py-12">
       <div class="animate-spin h-8 w-8 border-3 border-indigo-600 border-t-transparent rounded-full mx-auto mb-3"></div>
       <p>Uruchamiam analizę...</p>
+      <button @click="loadAnalysis" class="mt-4 text-xs text-indigo-600 hover:text-indigo-800 underline">
+        Odśwież
+      </button>
     </div>
 
     <div v-else-if="error && !analysis" class="bg-red-50 border border-red-200 rounded-lg p-4 text-center">
@@ -259,18 +363,52 @@ async function submitVerification() {
         <p class="text-xs text-red-800">{{ error }}</p>
       </div>
 
-      <!-- Running indicator -->
-      <div v-if="analysis.status === 'running'" class="bg-blue-50 border border-blue-200 rounded p-3 mb-3 flex items-center gap-2">
-        <div class="animate-spin h-4 w-4 border-2 border-indigo-600 border-t-transparent rounded-full"></div>
-        <span class="text-xs text-blue-800">
-          Krok {{ analysis.current_step }}: {{ steps[analysis.current_step]?.label }}...
-          <span class="text-blue-600 ml-1">(30–60 sek.)</span>
-        </span>
+      <!-- Running indicator with progress -->
+      <div v-if="analysis.status === 'running'" class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">
+        <div class="flex items-center gap-2 mb-2">
+          <div class="animate-spin h-4 w-4 border-2 border-indigo-600 border-t-transparent rounded-full"></div>
+          <span class="text-xs font-medium text-blue-900">
+            Krok {{ analysis.current_step }}/{{ steps.length - 1 }}: {{ progressInfo?.label || steps[analysis.current_step]?.label }}
+          </span>
+          <span v-if="progressInfo?.percent != null" class="text-[10px] text-blue-600 font-mono">
+            {{ progressInfo.percent }}%
+          </span>
+        </div>
+        <!-- Progress bar -->
+        <div class="w-full bg-blue-200 rounded-full h-1.5 mb-1.5">
+          <div
+            class="bg-indigo-600 h-1.5 rounded-full transition-all duration-500"
+            :style="{ width: (progressInfo?.percent ?? 10) + '%' }"
+          ></div>
+        </div>
+        <!-- Phase description -->
+        <div class="flex items-center justify-between">
+          <p class="text-[11px] text-blue-700 italic">
+            {{ progressInfo?.phase || 'Przetwarzam...' }}
+          </p>
+          <span v-if="progressInfo?.attachment_count" class="text-[10px] text-blue-500">
+            {{ progressInfo.attachment_count }} załączników
+          </span>
+        </div>
       </div>
 
       <!-- ===== STEP 0: Eligibility ===== -->
       <div v-if="activeTab === 0 && step0" class="bg-white rounded-lg shadow p-4 mb-4">
-        <h2 class="text-sm font-semibold text-gray-900 mb-3">Krok 0: Warunki udziału</h2>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-gray-900">Krok 0: Warunki udziału</h2>
+          <button
+            v-if="analysis.status === 'running' && analysis.current_step === 0"
+            @click="handleCancelAnalysis"
+            :disabled="cancelling"
+            class="px-2.5 py-1 bg-gray-600 text-white rounded text-[10px] font-medium hover:bg-gray-700 disabled:opacity-50 flex items-center gap-1"
+          >
+            <svg v-if="cancelling" class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            {{ cancelling ? 'Anuluję...' : 'Przerwij sprawdzanie' }}
+          </button>
+        </div>
 
         <div v-if="step0.conditions?.length" class="space-y-2 mb-3">
           <div
@@ -283,7 +421,16 @@ async function submitVerification() {
                 {{ cond.met ? '✓' : '✗' }}
               </span>
               <div class="flex-1 min-w-0">
-                <p class="font-medium text-xs text-gray-900">{{ cond.name }}</p>
+                <div class="flex items-start justify-between gap-2">
+                  <p class="font-medium text-xs text-gray-900">{{ cond.name }}</p>
+                  <button
+                    v-if="!cond.met && analysis?.status === 'waiting_user'"
+                    @click="handleQuickReject"
+                    class="shrink-0 px-2 py-1 bg-red-100 text-red-700 rounded text-[10px] font-medium hover:bg-red-200 transition-colors whitespace-nowrap"
+                  >
+                    Nie spełnimy
+                  </button>
+                </div>
                 <p class="text-[11px] text-gray-600 mt-0.5">{{ cond.description }}</p>
                 <p class="text-[11px] mt-0.5" :class="cond.met ? 'text-green-700' : 'text-red-700'">
                   {{ cond.reason }}
@@ -307,14 +454,14 @@ async function submitVerification() {
                     class="w-full border border-gray-300 rounded px-2 py-1 text-[11px]"
                     placeholder="Np. Mamy projekt X dla klienta Y o wartości Z, technologie: A, B..."
                   ></textarea>
-                  <div class="flex gap-4 mt-1">
+                  <div class="flex items-center gap-4 mt-1">
                     <label class="flex items-center gap-1 text-[10px] text-gray-600 cursor-pointer">
                       <input type="checkbox" v-model="addToProfile[i]" class="rounded text-indigo-600" />
-                      Dodaj na stałe do profilu firmy
+                      Zapisz w profilu firmy (zespół, technologie, certyfikaty)
                     </label>
                     <label class="flex items-center gap-1 text-[10px] text-gray-600 cursor-pointer">
                       <input type="checkbox" v-model="addToPortfolio[i]" class="rounded text-indigo-600" />
-                      Dodaj jako projekt do portfolio
+                      Aktualizuj / dodaj projekty w portfolio
                     </label>
                   </div>
                 </div>
@@ -327,13 +474,87 @@ async function submitVerification() {
           <CopyableText :text="step0.summary" />
         </div>
 
+        <!-- Attachment upload section -->
+        <div v-if="analysis.status === 'waiting_user'" class="border-t pt-3 mb-3">
+          <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
+            <h3 class="text-xs font-semibold text-blue-900 mb-2 flex items-center gap-1.5">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              </svg>
+              Dodaj brakujące dokumenty (ZIP, PDF, DOCX, XLSX)
+            </h3>
+
+            <!-- Existing attachments -->
+            <div v-if="existingAttachments.length" class="mb-2">
+              <p class="text-[10px] text-gray-500 mb-1">Obecne załączniki ({{ existingAttachments.length }}):</p>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="att in existingAttachments" :key="att.id"
+                  class="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-100 text-[10px] text-gray-600">
+                  {{ att.filename }}
+                  <span v-if="att.file_size_bytes" class="text-gray-400 ml-1">({{ Math.round(att.file_size_bytes / 1024) }} KB)</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- Drop zone -->
+            <div
+              @dragover.prevent="attachmentDragOver = true"
+              @dragleave.prevent="attachmentDragOver = false"
+              @drop.prevent="handleAttachmentDrop"
+              :class="['border-2 border-dashed rounded-lg p-3 text-center cursor-pointer transition-colors',
+                attachmentDragOver ? 'border-blue-400 bg-blue-100' : 'border-gray-300 hover:border-blue-400 bg-white']"
+              @click="($refs.attachmentInput as HTMLInputElement)?.click()"
+            >
+              <p class="text-[11px] text-gray-500">Przeciągnij pliki lub kliknij aby wybrać</p>
+              <p class="text-[10px] text-gray-400">ZIP-y zostaną automatycznie rozpakowane, duplikaty pominięte</p>
+              <input ref="attachmentInput" type="file" multiple class="hidden" @change="handleAttachmentSelect"
+                accept=".pdf,.docx,.doc,.xlsx,.xls,.zip,.rar,.7z,.csv,.txt,.pptx" />
+            </div>
+
+            <!-- Queued files -->
+            <div v-if="attachmentFiles.length" class="mt-2 space-y-1">
+              <div v-for="(file, i) in attachmentFiles" :key="i"
+                class="flex items-center justify-between bg-white rounded px-2 py-1 border text-[11px]">
+                <div class="flex items-center gap-1.5">
+                  <span class="text-gray-400">{{ file.name.endsWith('.zip') ? '📦' : '📄' }}</span>
+                  <span class="text-gray-700">{{ file.name }}</span>
+                  <span class="text-gray-400">({{ Math.round(file.size / 1024) }} KB)</span>
+                </div>
+                <button @click="removeAttachmentFile(i)" class="text-red-400 hover:text-red-600 text-xs">✕</button>
+              </div>
+              <button @click="submitAttachments" :disabled="attachmentUploading"
+                class="w-full px-3 py-1.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1.5">
+                <svg v-if="attachmentUploading" class="animate-spin h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                {{ attachmentUploading ? 'Wgrywam i rozpakowuję...' : `Wgraj ${attachmentFiles.length} plik(ów)` }}
+              </button>
+            </div>
+
+            <!-- Upload result -->
+            <div v-if="attachmentUploadResult" class="mt-2 text-[11px]">
+              <p class="text-green-700" v-if="attachmentUploadResult.added">
+                Dodano {{ attachmentUploadResult.added }} nowych plików.
+              </p>
+              <p class="text-yellow-700" v-if="attachmentUploadResult.skipped">
+                Pominięto {{ attachmentUploadResult.skipped }} duplikatów.
+              </p>
+            </div>
+          </div>
+        </div>
+
         <!-- NOT eligible -->
         <div v-if="step0.eligible === false && analysis.status === 'waiting_user'" class="border-t pt-3 space-y-2">
           <div class="flex gap-2">
             <button @click="handleFixEligibility"
-              :disabled="Object.keys(fixSelections).length === 0 && !Object.values(customTexts).some(t => t?.trim())"
-              class="px-3 py-1.5 bg-yellow-600 text-white rounded text-xs hover:bg-yellow-700 disabled:opacity-50">
-              Ponów sprawdzenie z poprawkami
+              :disabled="fixSaving || (Object.keys(fixSelections).length === 0 && !Object.values(customTexts).some(t => t?.trim()))"
+              class="px-3 py-1.5 bg-yellow-600 text-white rounded text-xs hover:bg-yellow-700 disabled:opacity-50 flex items-center gap-1.5">
+              <svg v-if="fixSaving" class="animate-spin h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              {{ fixSaving ? 'Zapisuję i sprawdzam...' : 'Zapisz dane i ponów sprawdzanie' }}
             </button>
             <button @click="handleDecision('no_go')" class="px-3 py-1.5 bg-red-600 text-white rounded text-xs hover:bg-red-700">
               Odrzuć przetarg
