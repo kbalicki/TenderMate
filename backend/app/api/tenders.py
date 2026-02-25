@@ -125,6 +125,11 @@ async def list_tenders(
                 Tender.submission_deadline < datetime.utcnow(),
                 Tender.status.notin_(["completed", "rejected"]),
             )
+        elif status == "failed":
+            base = base.where(
+                Tender.status.in_(["scrape_failed", "failed"])
+                | (Tender.error_message.isnot(None))
+            )
         else:
             base = base.where(Tender.status == status)
     if search:

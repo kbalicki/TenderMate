@@ -228,7 +228,7 @@ function formatDeadline(d: string | null): { date: string; time: string } | null
 
 // Stats
 const stats = computed(() => {
-  if (!data.value) return { total: 0, analyzing: 0, completed: 0, rejected: 0, archived: 0 }
+  if (!data.value) return { total: 0, analyzing: 0, completed: 0, rejected: 0, archived: 0, errors: 0 }
   const items = data.value.items
   return {
     total: data.value.total,
@@ -236,6 +236,7 @@ const stats = computed(() => {
     completed: items.filter(t => t.status === 'completed').length,
     rejected: items.filter(t => t.status === 'rejected').length,
     archived: items.filter(t => isDeadlineExpired(t.submission_deadline) && !['completed', 'rejected'].includes(t.status)).length,
+    errors: items.filter(t => ['scrape_failed', 'failed'].includes(t.status) || t.error_message).length,
   }
 })
 </script>
@@ -250,7 +251,7 @@ const stats = computed(() => {
     </div>
 
     <!-- Stats -->
-    <div v-if="data" class="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+    <div v-if="data" class="grid grid-cols-3 md:grid-cols-6 gap-3 mb-4">
       <button @click="statusFilter = ''; page = 1; load()"
         :class="['rounded-lg p-3 text-left transition-colors', !statusFilter ? 'bg-indigo-50 ring-2 ring-indigo-300' : 'bg-white shadow hover:bg-gray-50']">
         <p class="text-[10px] text-gray-500 uppercase tracking-wide">Wszystkie</p>
@@ -270,6 +271,11 @@ const stats = computed(() => {
         :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'rejected' ? 'bg-red-50 ring-2 ring-red-300' : 'bg-white shadow hover:bg-gray-50']">
         <p class="text-[10px] text-red-600 uppercase tracking-wide">Odrzucone</p>
         <p class="text-xl font-bold text-red-600">{{ stats.rejected }}</p>
+      </button>
+      <button @click="statusFilter = 'failed'; page = 1; load()"
+        :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'failed' ? 'bg-red-50 ring-2 ring-red-300' : 'bg-white shadow hover:bg-gray-50']">
+        <p class="text-[10px] text-red-600 uppercase tracking-wide">Błędy</p>
+        <p class="text-xl font-bold text-red-600">{{ stats.errors }}</p>
       </button>
       <button @click="statusFilter = 'archived'; page = 1; load()"
         :class="['rounded-lg p-3 text-left transition-colors', statusFilter === 'archived' ? 'bg-orange-50 ring-2 ring-orange-300' : 'bg-white shadow hover:bg-gray-50']">
@@ -372,9 +378,6 @@ const stats = computed(() => {
                 {{ t.title || 'Bez tytułu' }}
               </RouterLink>
               <p v-if="t.ai_summary" class="text-[10px] text-gray-500 line-clamp-2 mt-0.5">{{ t.ai_summary }}</p>
-              <p v-if="t.error_message" class="text-[10px] text-red-500 truncate mt-0.5" :title="t.error_message">
-                {{ t.error_message }}
-              </p>
               <p v-if="t.reference_number && !t.ai_summary" class="text-[10px] text-gray-400 truncate">{{ t.reference_number }}</p>
             </td>
 
@@ -412,6 +415,13 @@ const stats = computed(() => {
                   {{ getStatusLabel(getDisplayStatus(t.status, t.submission_deadline)) }}
                 </span>
               </span>
+              <!-- Error tooltip -->
+              <div v-if="t.error_message" class="relative group/err inline-block ml-1 align-middle">
+                <span class="text-red-500 cursor-help text-xs font-bold" title="">&#9888;</span>
+                <div class="hidden group-hover/err:block absolute z-50 bottom-full left-0 mb-1 w-64 p-2 bg-red-50 border border-red-200 rounded shadow-lg text-[11px] text-red-700 whitespace-normal">
+                  {{ t.error_message }}
+                </div>
+              </div>
             </td>
 
             <!-- Eligibility -->

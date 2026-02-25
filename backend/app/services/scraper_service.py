@@ -14,6 +14,7 @@ from app.database import async_session
 from app.models.tender import Tender
 from app.models.tender_attachment import TenderAttachment
 from app.scrapers.base import detect_portal
+from app.scrapers.bazakonkurencyjnosci import scrape_tender as scrape_bazakonkurencyjnosci
 from app.scrapers.ezamowienia import scrape_tender as scrape_ezamowienia
 from app.scrapers.logintrade import scrape_tender as scrape_logintrade
 
@@ -368,9 +369,14 @@ async def _run_scraping(tender_id: int) -> None:
     # Use dedicated scraper for known portals, fallback to generic microservice
     is_ezamowienia = "ezamowienia.gov.pl" in url.lower()
     is_logintrade = "logintrade.net" in url.lower()
+    is_bazakonkurencyjnosci = "bazakonkurencyjnosci" in url.lower()
 
     try:
-        if is_ezamowienia:
+        if is_bazakonkurencyjnosci:
+            logger.info(f"[Scraper] Używam dedykowanego scrapera bazakonkurencyjnosci.gov.pl")
+            data = await scrape_bazakonkurencyjnosci(url)
+            cookies = {}
+        elif is_ezamowienia:
             logger.info(f"[Scraper] Używam dedykowanego scrapera ezamowienia.gov.pl")
             data = await scrape_ezamowienia(url)
             cookies = {}
@@ -510,7 +516,7 @@ async def _run_scraping(tender_id: int) -> None:
                 break
 
     # For dedicated scrapers (ezamowienia, logintrade), trust their title directly
-    tender_title = scraped_title if (is_ezamowienia or is_logintrade) else ""
+    tender_title = scraped_title if (is_ezamowienia or is_logintrade or is_bazakonkurencyjnosci) else ""
     if not tender_title:
         for pattern in [
             r'(?:Nazwa post[ęe]powania|Nazwa zam[óo]wienia)[:\s]*([^\n]{5,250})',
