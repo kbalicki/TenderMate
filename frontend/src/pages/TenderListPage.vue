@@ -350,6 +350,7 @@ const stats = computed(() => {
               Status <span class="text-gray-300">{{ sortIcon('status') }}</span>
             </th>
             <th class="px-3 py-2">Warunki</th>
+            <th class="px-3 py-2 text-center">Wadium</th>
             <th class="px-3 py-2 text-center">Zał.</th>
             <th class="px-3 py-2"></th>
           </tr>
@@ -422,6 +423,14 @@ const stats = computed(() => {
               >
                 {{ eligibilityBadge(t)!.text }}
               </span>
+            </td>
+
+            <!-- Wadium -->
+            <td class="px-3 py-2 text-center">
+              <span v-if="t.analysis_summary?.wadium_required === true" class="text-[10px] text-orange-700 font-medium whitespace-nowrap">
+                {{ t.analysis_summary.wadium_amount || 'TAK' }}
+              </span>
+              <span v-else-if="t.analysis_summary?.wadium_required === false" class="text-[10px] text-gray-400">—</span>
             </td>
 
             <!-- Attachment count -->

@@ -7,12 +7,31 @@ export interface EligibilityCondition {
   fix_options: string[]
 }
 
+export interface Step0WadiumInfo {
+  required: boolean
+  amount: string
+  currency: string
+  forms: string[]
+  deadline: string
+  bank_account: string | null
+  source_reference: string
+}
+
+export interface Step0EvaluationCriterion {
+  name: string
+  weight_pct: number
+  scoring_method: string
+  source_reference: string
+}
+
 export interface Step0Result {
   eligible: boolean
   conditions: EligibilityCondition[]
   summary: string
   scope_description: string
   estimated_budget: string
+  wadium: Step0WadiumInfo | null
+  evaluation_criteria: Step0EvaluationCriterion[] | null
 }
 
 // Step 1: Scope & Requirements

@@ -34,6 +34,8 @@ export interface AnalysisSummary {
   go_no_go_rationale: string | null
   total_net_pln: number | null
   scope_description: string | null
+  wadium_required: boolean | null
+  wadium_amount: string | null
   analysis_status: string | null
   user_decision: string | null
   attachment_count: number

@@ -564,9 +564,36 @@ async function loadExistingAttachments() {
 
         <!-- GO / NO-GO -->
         <div v-if="step0.eligible && analysis.status === 'waiting_user' && !analysis.user_decision" class="border-t pt-3">
-          <div class="bg-indigo-50 rounded p-3 mb-3">
+          <div class="bg-indigo-50 rounded p-3 mb-3 space-y-2">
             <p class="text-xs text-gray-700">{{ step0.scope_description }}</p>
-            <p class="text-xs text-gray-700 mt-1"><strong>Szacunkowy budżet:</strong> {{ step0.estimated_budget }}</p>
+            <p class="text-xs text-gray-700"><strong>Szacunkowy budżet:</strong> {{ step0.estimated_budget }}</p>
+
+            <!-- Wadium -->
+            <div v-if="step0.wadium" class="border-t border-indigo-200 pt-2">
+              <p class="text-xs font-semibold text-gray-800 mb-1">Wadium</p>
+              <div v-if="step0.wadium.required" class="space-y-0.5">
+                <p class="text-xs text-gray-700"><strong>Kwota:</strong> {{ step0.wadium.amount }}</p>
+                <p v-if="step0.wadium.forms?.length" class="text-xs text-gray-700"><strong>Formy:</strong> {{ step0.wadium.forms.join(', ') }}</p>
+                <p v-if="step0.wadium.deadline" class="text-xs text-gray-700"><strong>Termin:</strong> {{ step0.wadium.deadline }}</p>
+                <p v-if="step0.wadium.bank_account" class="text-xs text-gray-700"><strong>Konto:</strong> {{ step0.wadium.bank_account }}</p>
+                <p v-if="step0.wadium.source_reference" class="text-[10px] text-gray-400">{{ step0.wadium.source_reference }}</p>
+              </div>
+              <p v-else class="text-xs text-green-700">Wadium nie jest wymagane</p>
+            </div>
+
+            <!-- Kryteria oceny ofert -->
+            <div v-if="step0.evaluation_criteria?.length" class="border-t border-indigo-200 pt-2">
+              <p class="text-xs font-semibold text-gray-800 mb-1">Kryteria oceny ofert</p>
+              <div class="space-y-1">
+                <div v-for="(crit, i) in step0.evaluation_criteria" :key="i" class="flex items-start gap-2 text-xs">
+                  <span class="font-bold text-indigo-700 whitespace-nowrap">{{ crit.weight_pct }}%</span>
+                  <div>
+                    <span class="font-medium text-gray-900">{{ crit.name }}</span>
+                    <span v-if="crit.scoring_method" class="text-gray-500 ml-1">— {{ crit.scoring_method }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
           <div class="flex gap-2">
             <button @click="handleDecision('go')" class="flex-1 px-4 py-2 bg-green-600 text-white rounded font-medium text-sm hover:bg-green-700 text-center">

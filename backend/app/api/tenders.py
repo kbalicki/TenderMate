@@ -82,8 +82,14 @@ def _extract_analysis_summary(analysis: Analysis | None, attachment_count: int) 
         total_net_pln = step3.get("total_net_pln")
 
     scope_description = None
+    wadium_required = None
+    wadium_amount = None
     if isinstance(step0, dict):
         scope_description = step0.get("scope_description")
+        wadium = step0.get("wadium")
+        if isinstance(wadium, dict):
+            wadium_required = wadium.get("required")
+            wadium_amount = wadium.get("amount")
 
     return AnalysisSummary(
         eligible=eligible,
@@ -92,6 +98,8 @@ def _extract_analysis_summary(analysis: Analysis | None, attachment_count: int) 
         go_no_go_rationale=go_no_go_rationale,
         total_net_pln=total_net_pln,
         scope_description=scope_description,
+        wadium_required=wadium_required,
+        wadium_amount=wadium_amount,
         analysis_status=analysis.status,
         user_decision=analysis.user_decision,
         attachment_count=attachment_count,

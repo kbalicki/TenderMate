@@ -390,6 +390,10 @@ Sprawdź: uprawnienia/koncesje/licencje, doświadczenie (realizacje, min. warto�
 personel (role, certyfikaty, lata doświadczenia), sytuacja ekonomiczna/finansowa (OC, przychody),
 brak podstaw wykluczenia (Pzp), inne warunki szczególne (lokalizacja, czas reakcji, ISO, itp.).
 
+Dodatkowo wyciągnij z dokumentacji:
+- WADIUM: czy jest wymagane, kwota, formy wniesienia, termin, konto bankowe zamawiającego
+- KRYTERIA OCENY OFERT: wszystkie kryteria, wagi procentowe, sposób punktowania
+
 TWARDA REGUŁA: Jeśli choć jeden warunek nie jest spełniony i nie da się go realnie naprawić
 (np. wymaga konsorcjum, podwykonawcy, uzupełnienia certyfikatów, polisy OC, innej referencji) —
 zaznacz to jednoznacznie. Sztuczne obejścia i naginanie profilu firmy = niespełnienie warunku.
@@ -417,7 +421,24 @@ Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
   ],
   "summary": "krótkie podsumowanie oceny (2-3 zdania po polsku)",
   "scope_description": "co trzeba zrealizować w ramach zamówienia (3-5 zdań po polsku, zrozumiałe dla nietechnicznej osoby)",
-  "estimated_budget": "budżet z dokumentacji, lub szacunek z uzasadnieniem, lub 'nieokreślony'"
+  "estimated_budget": "budżet z dokumentacji, lub szacunek z uzasadnieniem, lub 'nieokreślony'",
+  "wadium": {
+    "required": true,
+    "amount": "kwota wadium (np. '5 000,00 PLN')",
+    "currency": "PLN",
+    "forms": ["przelew bankowy", "gwarancja bankowa", "gwarancja ubezpieczeniowa"],
+    "deadline": "termin wniesienia wadium",
+    "bank_account": "numer konta zamawiającego do przelewu lub null",
+    "source_reference": "gdzie w dokumentacji (np. 'SWZ pkt XII')"
+  },
+  "evaluation_criteria": [
+    {
+      "name": "nazwa kryterium (np. 'Cena', 'Doświadczenie', 'Termin realizacji')",
+      "weight_pct": 60,
+      "scoring_method": "jak liczone punkty — wzór lub opis",
+      "source_reference": "gdzie w dokumentacji"
+    }
+  ]
 }"""
 
     return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))

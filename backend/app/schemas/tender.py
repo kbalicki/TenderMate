@@ -63,6 +63,8 @@ class AnalysisSummary(BaseModel):
     go_no_go_rationale: str | None = None
     total_net_pln: float | None = None
     scope_description: str | None = None
+    wadium_required: bool | None = None
+    wadium_amount: str | None = None
     analysis_status: str | None = None
     user_decision: str | None = None
     attachment_count: int = 0
