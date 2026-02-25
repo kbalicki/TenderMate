@@ -6,6 +6,7 @@ from app.models.tender import Tender
 from app.models.tender_attachment import TenderAttachment
 from app.models.analysis import Analysis
 from app.models.analysis_document import AnalysisDocument
+from app.models.verification_file import VerificationFile
 
 __all__ = [
     "User",
@@ -16,4 +17,5 @@ __all__ = [
     "TenderAttachment",
     "Analysis",
     "AnalysisDocument",
+    "VerificationFile",
 ]

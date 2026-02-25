@@ -38,6 +38,7 @@ class CompanyProfile(Base):
     hourly_rate_pln: Mapped[int] = mapped_column(Integer, default=200)
     qa_buffer_pct: Mapped[int] = mapped_column(Integer, default=20)
     risk_buffer_pct: Mapped[int] = mapped_column(Integer, default=20)
+    annual_revenue_pln: Mapped[int | None] = mapped_column(Integer)
 
     bank_account: Mapped[str | None] = mapped_column(String(100))
     contact_person: Mapped[str | None] = mapped_column(String(255))

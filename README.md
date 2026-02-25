@@ -1,54 +1,54 @@
 # TenderMate
 
-Lokalne narzedzie webowe do analizy przetargow publicznych w Polsce. Scrapuje portale przetargowe, analizuje dokumentacje za pomoca AI (Claude CLI) i prowadzi uzytkownika przez strukturalny proces decyzyjny.
+Lokalne narzędzie webowe do analizy przetargów publicznych i zapytań ofertowych w Polsce. Scrapuje portale przetargowe, analizuje dokumentację za pomocą AI (Claude CLI) i prowadzi użytkownika przez strukturalny proces decyzyjny.
 
 ## Funkcje
 
-- **Profil firmy** — dane firmy, zespol, portfolio, preferencje przetargowe
-- **Import przetargow** — z URL (scraping 9 portali) lub reczne wprowadzenie tresci + zalacznikow
-- **Analiza AI** — 6-krokowy workflow:
-  - Krok 0: Sprawdzenie warunkow udzialu (eligibility check)
-  - Krok 1: Lista wymaganych dokumentow
-  - Krok 2: Pozycje wyceny, kryteria oceny, terminy, personel
-  - Krok 3: Analiza ryzyk
-  - Krok 4: Estymacja kosztow
-  - Krok 5: Wytyczne do dokumentow (z przyciskiem KOPIUJ)
-- **Predefined options** — klikalne opcje zamiast czatu, oszczednosc czasu
+- **Profil firmy** — dane firmy, zespół, portfolio, preferencje przetargowe, roczny obrót
+- **Import przetargów** — z URL (scraping portali) lub ręczne wprowadzenie treści + załączników
+- **Analiza AI** — 7-krokowy workflow:
+  - Krok 0: Sprawdzenie warunków udziału (eligibility check)
+  - Krok 1: Zakres i wymagania
+  - Krok 2: Rozwiązanie techniczne (z analizą open source)
+  - Krok 3: Wycena i koszty (stawka rbh × czas + margines)
+  - Krok 4: Analiza ryzyk (GO/NO-GO)
+  - Krok 5: Dokumenty ofertowe (wadium, lista dokumentów)
+  - Krok 6: Weryfikacja dokumentów (upload + AI review)
+- **Interaktywne naprawianie warunków** — wpisz uzasadnienie, AI doda do profilu firmy
+- **Samorozwijający się profil** — z każdą analizą AI wzbogaca bazę wiedzy o firmie
+- **Wykrywanie typu zamawiającego** — publiczny/prywatny (heurystyka + domena portalu)
+- **Bulk actions** — zaznacz wiele przetargów, uruchom analizę hurtowo
+- **Nawigacja tab-owa** — klikaj w kroki analizy, content się podmienia (bez scrollowania)
 
-## Obslugiwane portale
+## Obsługiwane portale
 
-| Portal | Status |
-|---|---|
-| ezamowienia.gov.pl | Planowany |
-| bazakonkurencyjnosci.funduszeeuropejskie.gov.pl | Planowany |
-| oneplace.marketplanet.pl | Planowany |
-| platformazakupowa.pl | Planowany |
-| platformaofertowa.pl | Planowany |
-| platforma.eb2b.com.pl | Planowany |
-| e-propublico.pl | Planowany |
-| ted.europa.eu | Planowany |
-| platformazakupowa.logintrade.pl | Planowany |
+| Portal | Scraper | Status |
+|--------|---------|--------|
+| [e-Zamówienia](https://ezamowienia.gov.pl) | Dedykowany (API publiczne) | Działa |
+| [Baza Konkurencyjności](https://bazakonkurencyjnosci.funduszeeuropejskie.gov.pl) | Mikroserwis | Działa |
+| [Logintrade](https://logintrade.net) | Dedykowany (HTML parser) | Działa |
+| platformazakupowa.pl | Mikroserwis (fallback) | Działa |
+| oneplace.marketplanet.pl | Mikroserwis (fallback) | Działa |
+| Inne portale | Mikroserwis (fallback) | Działa |
 
 ## Stack technologiczny
 
 | Warstwa | Technologia |
-|---|---|
-| Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
-| Frontend | Vue 3, TypeScript, Tailwind CSS, Pinia |
-| AI | Claude CLI (subprocess, bez kosztow API) |
-| Scraping | Playwright (headless Chromium) |
+|---------|-------------|
+| Backend | Python 3.12+, FastAPI, SQLAlchemy (async), SQLite, aiosqlite |
+| Frontend | Vue 3, TypeScript, Tailwind CSS v4, Vite |
+| AI | Claude CLI (subprocess) |
+| Scraping | httpx + BeautifulSoup (dedykowane), mikroserwis (fallback) |
 
 ## Wymagania
 
 - Python 3.12+
 - Node.js 20+
 - [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) zainstalowane i skonfigurowane
-- Chromium (instalowany przez Playwright)
 
 ## Instalacja
 
 ```bash
-# Klonowanie
 git clone https://github.com/kbalicki/TenderMate.git
 cd TenderMate
 
@@ -56,9 +56,7 @@ cd TenderMate
 cd backend
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
-playwright install chromium
-cp .env .env.local  # opcjonalnie dostosuj
+pip install -e .
 
 # Frontend
 cd ../frontend
@@ -71,21 +69,40 @@ npm install
 # Terminal 1 — backend
 cd backend
 source .venv/bin/activate
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 2 — frontend
 cd frontend
 npm run dev
 ```
 
-Lub jednym poleceniem:
+Aplikacja dostępna pod: **http://localhost:5173**
+API docs: **http://localhost:8000/docs**
+
+### Auto-restart (systemd)
+
+Aby backend i frontend restartowały się automatycznie po awarii lub restarcie systemu:
 
 ```bash
-./scripts/dev.sh
+./scripts/install-services.sh
 ```
 
-Aplikacja dostepna pod: **http://localhost:5173**
-API docs: **http://localhost:8000/docs**
+Logi i zarządzanie:
+```bash
+systemctl --user status tendermate-backend
+journalctl --user -u tendermate-backend -f
+systemctl --user restart tendermate-backend
+```
+
+## Konfiguracja
+
+Opcjonalnie utwórz `backend/.env`:
+
+```env
+CLAUDE_MODEL=sonnet
+DATA_DIR=./data
+SCRAPER_URL=https://scraper.tools.k4.pl/scrape
+```
 
 ## Struktura projektu
 
@@ -96,17 +113,16 @@ TenderMate/
 │   │   ├── api/          # FastAPI routery
 │   │   ├── models/       # SQLAlchemy ORM
 │   │   ├── schemas/      # Pydantic schemas
-│   │   ├── services/     # Logika biznesowa + Claude CLI
-│   │   ├── scrapers/     # Plugin per portal
-│   │   └── prompts/      # Szablony promptow AI
-│   └── data/             # SQLite + pliki przetargow (gitignored)
+│   │   ├── services/     # Logika biznesowa (analysis, claude, scraper)
+│   │   └── scrapers/     # Dedykowane scrapery (ezamowienia, logintrade)
+│   └── data/             # SQLite + pliki przetargów (gitignored)
 ├── frontend/
 │   └── src/
 │       ├── pages/        # Strony (Dashboard, Profil, Przetargi, Analiza)
 │       ├── components/   # Komponenty Vue
 │       ├── api/          # Axios wrappery
 │       └── types/        # TypeScript interfaces
-└── scripts/              # Skrypty dev
+└── scripts/              # Systemd services + install script
 ```
 
 ## Licencja

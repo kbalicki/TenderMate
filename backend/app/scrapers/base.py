@@ -13,6 +13,7 @@ KNOWN_DOMAINS = [
     "platforma.eb2b.com.pl",
     "e-propublico.pl",
     "ted.europa.eu",
+    "logintrade.net",
     "platformazakupowa.logintrade.pl",
     "ezamowienia.gov.pl",
     "swpp2.gkpge.pl",

@@ -1,0 +1,15 @@
+[Unit]
+Description=TenderMate Backend (FastAPI + Uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=krzysztof-balicki
+WorkingDirectory=/home/krzysztof-balicki/Nextcloud/GIT/przetargi/backend
+ExecStart=/home/krzysztof-balicki/Nextcloud/GIT/przetargi/backend/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -80,6 +80,51 @@ def _extract_text_from_file(file_path: Path) -> str | None:
             return None
 
 
+def _fix_json_quotes(text: str) -> str:
+    """Fix unescaped quotes inside JSON string values by iterative repair.
+
+    Claude sometimes produces JSON where string values contain unescaped
+    double quotes (e.g. Polish „..." or citation marks). This function
+    replaces typographic quotes and then iteratively fixes parse errors
+    by escaping the problematic quote at each error position.
+    """
+    # Replace Polish typographic quotes with single quotes (decorative, not structural)
+    text = text.replace('\u201e', "'")  # „
+    text = text.replace('\u201d', "'")  # "
+    text = text.replace('\u201c', "'")  # "
+    text = text.replace('\u00ab', "'")  # «
+    text = text.replace('\u00bb', "'")  # »
+
+    # Iteratively fix unescaped quotes: find parse error, escape the quote, retry
+    for _ in range(50):  # Max 50 fixes
+        try:
+            json.loads(text)
+            return text  # Valid JSON
+        except json.JSONDecodeError as e:
+            # Find the problematic position and look for a quote nearby to escape
+            pos = e.pos
+            # The error is usually at a " that the parser interprets as end-of-string
+            # but it's actually inside the string. Look backwards for the quote.
+            # Strategy: look at chars around error pos for unescaped "
+            search_start = max(0, pos - 3)
+            search_end = min(len(text), pos + 3)
+            fixed = False
+            for check_pos in range(search_start, search_end):
+                if text[check_pos] == '"' and (check_pos == 0 or text[check_pos - 1] != '\\'):
+                    # Check if escaping this quote would help
+                    candidate = text[:check_pos] + '\\"' + text[check_pos + 1:]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError:
+                        text = candidate
+                        fixed = True
+                        break
+            if not fixed:
+                break  # Can't fix
+    return text
+
+
 def _extract_json(text: str) -> dict | list | None:
     """Try to extract JSON from text that may contain markdown fences or other wrapping."""
     # Try direct parse first
@@ -94,10 +139,15 @@ def _extract_json(text: str) -> dict | list | None:
     # Strip markdown code fences: ```json ... ``` or ``` ... ```
     match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', text, re.DOTALL)
     if match:
+        inner = match.group(1).strip()
         try:
-            return json.loads(match.group(1).strip())
+            return json.loads(inner)
         except json.JSONDecodeError:
-            pass
+            # Try fixing typographic quotes
+            try:
+                return json.loads(_fix_json_quotes(inner))
+            except json.JSONDecodeError:
+                pass
 
     # Try to find first { ... } or [ ... ] block
     for start_char, end_char in [('{', '}'), ('[', ']')]:
@@ -107,10 +157,15 @@ def _extract_json(text: str) -> dict | list | None:
         # Find matching closing bracket from the end
         end = text.rfind(end_char)
         if end > start:
+            candidate = text[start:end + 1]
             try:
-                return json.loads(text[start:end + 1])
+                return json.loads(candidate)
             except json.JSONDecodeError:
-                pass
+                # Try fixing typographic quotes
+                try:
+                    return json.loads(_fix_json_quotes(candidate))
+                except json.JSONDecodeError:
+                    pass
 
     return None
 
@@ -141,7 +196,7 @@ async def call_claude(
         for f in context_files:
             if not f.exists():
                 continue
-            if f.stat().st_size > 500_000:
+            if f.stat().st_size > 2_000_000:
                 logger.warning(f"[Claude CLI] Plik {f.name} za duży ({f.stat().st_size} B), pomijam")
                 continue
 

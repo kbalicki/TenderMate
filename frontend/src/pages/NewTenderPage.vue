@@ -6,6 +6,7 @@ import { createFromUrl, createManual } from '@/api/tenders'
 const router = useRouter()
 const mode = ref<'url' | 'manual'>('url')
 const loading = ref(false)
+const errorMsg = ref('')
 
 // URL mode
 const urlText = ref('')
@@ -20,9 +21,12 @@ async function submitUrl() {
   const urls = urlText.value.split('\n').map(u => u.trim()).filter(Boolean)
   if (!urls.length) return
   loading.value = true
+  errorMsg.value = ''
   try {
     const tender = await createFromUrl(urls)
     router.push(`/tenders/${tender.id}`)
+  } catch (err: any) {
+    errorMsg.value = err?.response?.data?.detail || err?.message || 'Nie udało się utworzyć przetargu. Sprawdź czy backend działa.'
   } finally {
     loading.value = false
   }
@@ -31,9 +35,12 @@ async function submitUrl() {
 async function submitManual() {
   if (!tenderText.value.trim() && !files.value.length) return
   loading.value = true
+  errorMsg.value = ''
   try {
     const tender = await createManual(title.value, tenderText.value, files.value)
     router.push(`/tenders/${tender.id}`)
+  } catch (err: any) {
+    errorMsg.value = err?.response?.data?.detail || err?.message || 'Nie udało się utworzyć przetargu. Sprawdź czy backend działa.'
   } finally {
     loading.value = false
   }
@@ -82,6 +89,11 @@ function removeFile(index: number) {
       >
         Ręczne wprowadzenie
       </button>
+    </div>
+
+    <!-- Error message -->
+    <div v-if="errorMsg" class="mb-4 px-4 py-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+      {{ errorMsg }}
     </div>
 
     <!-- URL mode -->

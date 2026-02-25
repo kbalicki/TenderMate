@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { listTenders } from '@/api/tenders'
-import type { Tender } from '@/types/tender'
+import type { TenderListItem } from '@/types/tender'
 import { getStatusLabel, getStatusColor } from '@/composables/useStatusLabels'
 
-const recentTenders = ref<Tender[]>([])
+const recentTenders = ref<TenderListItem[]>([])
+const totalCount = ref(0)
 const loading = ref(true)
 
 onMounted(async () => {
   try {
-    recentTenders.value = await listTenders()
+    const result = await listTenders({ page_size: 10, sort_by: 'created_at', sort_dir: 'desc' })
+    recentTenders.value = result.items
+    totalCount.value = result.total
   } finally {
     loading.value = false
   }

@@ -41,6 +41,7 @@ export interface CompanyProfile {
   hourly_rate_pln: number
   qa_buffer_pct: number
   risk_buffer_pct: number
+  annual_revenue_pln: number | null
   bank_account: string | null
   contact_person: string | null
   team_members: TeamMember[]

@@ -1,8 +1,16 @@
 import api from './client'
-import type { Tender, TenderDetail } from '@/types/tender'
+import type { Tender, TenderDetail, PaginatedTenders } from '@/types/tender'
 
-export async function listTenders(status?: string): Promise<Tender[]> {
-  const params = status ? { status } : {}
+export interface TenderListParams {
+  status?: string
+  search?: string
+  sort_by?: string
+  sort_dir?: 'asc' | 'desc'
+  page?: number
+  page_size?: number
+}
+
+export async function listTenders(params: TenderListParams = {}): Promise<PaginatedTenders> {
   const { data } = await api.get('/tenders', { params })
   return data
 }

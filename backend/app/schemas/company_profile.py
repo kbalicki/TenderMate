@@ -59,6 +59,7 @@ class CompanyProfileBase(BaseModel):
     hourly_rate_pln: int = 200
     qa_buffer_pct: int = 20
     risk_buffer_pct: int = 20
+    annual_revenue_pln: int | None = None
     bank_account: str | None = None
     contact_person: str | None = None
 

@@ -1,9 +1,13 @@
+import io
+import logging
+import math
 import shutil
+import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import FileResponse
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
+from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import select, func, case, nulls_last
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,26 +15,163 @@ from app.config import settings
 from app.database import get_db
 from app.models.tender import Tender
 from app.models.tender_attachment import TenderAttachment
+from app.models.analysis import Analysis
 from app.schemas.tender import (
     TenderFromUrl,
     TenderOut,
     TenderDetailOut,
     TenderAttachmentOut,
+    TenderListItemOut,
+    PaginatedTendersOut,
+    AnalysisSummary,
 )
 from app.services import scraper_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tenders", tags=["tenders"])
 
+# Allowed sort columns
+_SORT_COLUMNS = {
+    "submission_deadline": Tender.submission_deadline,
+    "created_at": Tender.created_at,
+    "title": Tender.title,
+    "status": Tender.status,
+    "contracting_authority": Tender.contracting_authority,
+}
 
-@router.get("", response_model=list[TenderOut])
+
+def _extract_analysis_summary(analysis: Analysis | None, attachment_count: int) -> AnalysisSummary | None:
+    """Build a compact analysis summary from the Analysis model for the list view."""
+    if analysis is None:
+        return None
+
+    eligible = None
+    eligibility_summary = None
+    step0 = analysis.step0_result
+    if isinstance(step0, dict):
+        eligible = step0.get("eligible")
+        # Build eligibility summary: why not eligible + what to do
+        if eligible is False:
+            reasons = []
+            actions = []
+            for cond in step0.get("conditions", []):
+                if not cond.get("met"):
+                    if cond.get("reason"):
+                        reasons.append(cond["reason"])
+                    if cond.get("fix_options"):
+                        actions.extend(cond["fix_options"][:1])  # first fix option
+            summary_parts = []
+            if reasons:
+                summary_parts.append("; ".join(reasons[:2]))
+            if actions:
+                summary_parts.append("Rozwiązanie: " + "; ".join(actions[:2]))
+            eligibility_summary = " | ".join(summary_parts) if summary_parts else None
+
+    go_no_go = None
+    go_no_go_rationale = None
+    step4 = analysis.step4_result
+    if isinstance(step4, dict):
+        go_no_go = step4.get("go_no_go_recommendation")
+        go_no_go_rationale = step4.get("recommendation_rationale")
+
+    total_net_pln = None
+    step3 = analysis.step3_result
+    if isinstance(step3, dict):
+        total_net_pln = step3.get("total_net_pln")
+
+    scope_description = None
+    if isinstance(step0, dict):
+        scope_description = step0.get("scope_description")
+
+    return AnalysisSummary(
+        eligible=eligible,
+        eligibility_summary=eligibility_summary,
+        go_no_go=go_no_go,
+        go_no_go_rationale=go_no_go_rationale,
+        total_net_pln=total_net_pln,
+        scope_description=scope_description,
+        analysis_status=analysis.status,
+        user_decision=analysis.user_decision,
+        attachment_count=attachment_count,
+    )
+
+
+@router.get("", response_model=PaginatedTendersOut)
 async def list_tenders(
-    status: str | None = None, db: AsyncSession = Depends(get_db)
+    status: str | None = None,
+    search: str | None = None,
+    sort_by: str = Query("submission_deadline", enum=list(_SORT_COLUMNS.keys())),
+    sort_dir: str = Query("asc", enum=["asc", "desc"]),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
 ):
-    query = select(Tender).order_by(Tender.created_at.desc())
+    # Base query
+    base = select(Tender)
     if status:
-        query = query.where(Tender.status == status)
+        base = base.where(Tender.status == status)
+    if search:
+        like_pattern = f"%{search}%"
+        base = base.where(
+            Tender.title.ilike(like_pattern)
+            | Tender.contracting_authority.ilike(like_pattern)
+            | Tender.reference_number.ilike(like_pattern)
+        )
+
+    # Count total
+    count_q = select(func.count()).select_from(base.subquery())
+    total = (await db.execute(count_q)).scalar() or 0
+
+    # Sorting — nulls last for nullable columns
+    sort_col = _SORT_COLUMNS.get(sort_by, Tender.submission_deadline)
+    if sort_dir == "desc":
+        order = nulls_last(sort_col.desc())
+    else:
+        order = nulls_last(sort_col.asc())
+
+    # Paginate
+    query = (
+        base
+        .options(selectinload(Tender.analysis), selectinload(Tender.attachments))
+        .order_by(order)
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await db.execute(query)
-    return result.scalars().all()
+    tenders = result.scalars().unique().all()
+
+    # Build response items
+    items = []
+    for t in tenders:
+        att_count = len(t.attachments) if t.attachments else 0
+        summary = _extract_analysis_summary(t.analysis, att_count)
+        item = TenderListItemOut(
+            id=t.id,
+            source_type=t.source_type,
+            source_url=t.source_url,
+            portal_name=t.portal_name,
+            title=t.title,
+            contracting_authority=t.contracting_authority,
+            authority_type=t.authority_type,
+            reference_number=t.reference_number,
+            submission_deadline=t.submission_deadline,
+            status=t.status,
+            error_message=t.error_message,
+            ai_summary=t.ai_summary,
+            created_at=t.created_at,
+            updated_at=t.updated_at,
+            analysis_summary=summary,
+            attachment_count=att_count,
+        )
+        items.append(item)
+
+    return PaginatedTendersOut(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=max(1, math.ceil(total / page_size)),
+    )
 
 
 @router.post("/from-url", response_model=TenderOut, status_code=201)
@@ -72,6 +213,7 @@ async def rescrape_tender(tender_id: int, db: AsyncSession = Depends(get_db)):
         raise HTTPException(400, "Tender has no source URL")
 
     tender.status = "scraping"
+    tender.error_message = None
     await db.commit()
     await db.refresh(tender)
 
@@ -158,6 +300,37 @@ async def list_attachments(tender_id: int, db: AsyncSession = Depends(get_db)):
         select(TenderAttachment).where(TenderAttachment.tender_id == tender_id)
     )
     return result.scalars().all()
+
+
+@router.get("/{tender_id}/attachments/download-all")
+async def download_all_attachments(tender_id: int, db: AsyncSession = Depends(get_db)):
+    """Download all attachments as a single ZIP file."""
+    tender_result = await db.execute(select(Tender).where(Tender.id == tender_id))
+    tender = tender_result.scalar_one_or_none()
+    if not tender:
+        raise HTTPException(404, "Tender not found")
+
+    result = await db.execute(
+        select(TenderAttachment).where(TenderAttachment.tender_id == tender_id)
+    )
+    attachments = result.scalars().all()
+    if not attachments:
+        raise HTTPException(404, "No attachments to download")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for att in attachments:
+            file_path = Path(tender.data_dir) / att.file_path
+            if file_path.exists():
+                zf.write(file_path, att.filename)
+
+    buf.seek(0)
+    zip_name = f"przetarg_{tender_id}_zalaczniki.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+    )
 
 
 @router.get("/{tender_id}/attachments/{attachment_id}/download")

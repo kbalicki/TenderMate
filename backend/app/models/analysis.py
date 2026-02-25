@@ -25,6 +25,7 @@ class Analysis(Base):
     step3_result: Mapped[dict | None] = mapped_column(JSON)
     step4_result: Mapped[dict | None] = mapped_column(JSON)
     step5_result: Mapped[dict | None] = mapped_column(JSON)
+    step6_result: Mapped[dict | None] = mapped_column(JSON)
 
     error_message: Mapped[str | None] = mapped_column(Text)
 
@@ -35,5 +36,8 @@ class Analysis(Base):
 
     tender: Mapped["Tender"] = relationship(back_populates="analysis")  # noqa: F821
     documents: Mapped[list["AnalysisDocument"]] = relationship(  # noqa: F821
+        back_populates="analysis", cascade="all, delete-orphan"
+    )
+    verification_files: Mapped[list["VerificationFile"]] = relationship(  # noqa: F821
         back_populates="analysis", cascade="all, delete-orphan"
     )

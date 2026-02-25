@@ -424,6 +424,10 @@ function addTech() {
           <input v-model.number="profile.risk_buffer_pct" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" />
         </div>
       </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Roczny obrót netto (PLN)</label>
+        <input v-model.number="profile.annual_revenue_pln" type="number" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm" placeholder="np. 1000000" />
+      </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div>
           <label class="block text-sm font-medium text-gray-700 mb-1">Min. budzet (PLN)</label>

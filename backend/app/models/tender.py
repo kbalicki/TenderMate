@@ -21,8 +21,12 @@ class Tender(Base):
     reference_number: Mapped[str | None] = mapped_column(String(255))
     submission_deadline: Mapped[datetime | None] = mapped_column(DateTime)
     tender_text: Mapped[str | None] = mapped_column(Text)
+    ai_summary: Mapped[str | None] = mapped_column(Text)
+
+    authority_type: Mapped[str | None] = mapped_column(String(20))  # "public" or "private"
 
     status: Mapped[str] = mapped_column(String(50), default="new")
+    error_message: Mapped[str | None] = mapped_column(Text)
     data_dir: Mapped[str | None] = mapped_column(String(1000))
 
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

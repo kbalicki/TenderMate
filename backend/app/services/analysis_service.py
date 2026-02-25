@@ -54,6 +54,8 @@ def _build_company_context(profile: CompanyProfile) -> str:
         {
             "company_name": profile.company_name,
             "nip": profile.nip,
+            "regon": profile.regon,
+            "krs": profile.krs,
             "address": f"{profile.address_street}, {profile.address_postal_code} {profile.address_city}",
             "phone": profile.phone,
             "email": profile.email,
@@ -88,10 +90,122 @@ def _build_company_context(profile: CompanyProfile) -> str:
             "hourly_rate_pln": profile.hourly_rate_pln,
             "qa_buffer_pct": profile.qa_buffer_pct,
             "risk_buffer_pct": profile.risk_buffer_pct,
+            "annual_revenue_pln": profile.annual_revenue_pln,
         },
         ensure_ascii=False,
         indent=2,
     )
+
+
+async def enrich_profile_from_text(text: str, add_to_portfolio: bool = False) -> None:
+    """Use Claude to extract structured data from user text and add to company profile."""
+    from app.models.company_profile import CompanyProfile
+    from app.models.team_member import TeamMember
+    from app.models.portfolio_project import PortfolioProject
+
+    prompt = f"""Na podstawie poniższego tekstu użytkownika wyciągnij dane firmy.
+Tekst może opisywać: projekt (referencję), osobę w zespole, certyfikat, technologię, lub ogólne informacje o firmie.
+
+Tekst użytkownika:
+{text}
+
+Odpowiedz TYLKO jako JSON:
+{{
+  "portfolio_projects": [
+    {{
+      "project_name": "nazwa projektu",
+      "client_name": "nazwa klienta lub null",
+      "description": "opis projektu",
+      "contract_value_pln": null,
+      "year_started": null,
+      "year_completed": null,
+      "technologies_used": ["tech1"]
+    }}
+  ],
+  "team_members": [
+    {{
+      "full_name": "imię i nazwisko",
+      "role": "rola",
+      "experience_years": null,
+      "qualifications": "kwalifikacje",
+      "bio": "krótki opis"
+    }}
+  ],
+  "technologies": ["nowa_technologia"],
+  "certifications": ["nowy_certyfikat"],
+  "description_addition": "tekst do dopisania do opisu firmy lub null"
+}}
+
+Wypełnij TYLKO te pola, dla których znalazłeś dane w tekście. Puste tablice dla reszty."""
+
+    result = _safe_result(await call_claude(prompt, system_prompt="Wyciągnij dane z tekstu. Zwróć TYLKO JSON."))
+
+    async with async_session() as db:
+        from sqlalchemy.orm import selectinload
+        res = await db.execute(
+            select(CompanyProfile).options(
+                selectinload(CompanyProfile.team_members),
+                selectinload(CompanyProfile.portfolio_projects),
+            ).where(CompanyProfile.user_id == 1)
+        )
+        profile = res.scalar_one_or_none()
+        if not profile:
+            return
+
+        # Add portfolio projects
+        if add_to_portfolio:
+            for proj in result.get("portfolio_projects", []):
+                if proj.get("project_name"):
+                    db.add(PortfolioProject(
+                        company_profile_id=profile.id,
+                        project_name=proj["project_name"],
+                        client_name=proj.get("client_name"),
+                        description=proj.get("description"),
+                        contract_value_pln=proj.get("contract_value_pln"),
+                        year_started=proj.get("year_started"),
+                        year_completed=proj.get("year_completed"),
+                        technologies_used=proj.get("technologies_used", []),
+                    ))
+
+        # Add team members
+        for member in result.get("team_members", []):
+            if member.get("full_name"):
+                existing_names = [m.full_name.lower() for m in profile.team_members]
+                if member["full_name"].lower() not in existing_names:
+                    db.add(TeamMember(
+                        company_profile_id=profile.id,
+                        full_name=member["full_name"],
+                        role=member.get("role"),
+                        experience_years=member.get("experience_years"),
+                        qualifications=member.get("qualifications"),
+                        bio=member.get("bio"),
+                    ))
+
+        # Add technologies
+        new_techs = result.get("technologies", [])
+        if new_techs and isinstance(profile.technologies, list):
+            existing = [t.lower() for t in profile.technologies]
+            for tech in new_techs:
+                if tech and tech.lower() not in existing:
+                    profile.technologies = [*profile.technologies, tech]
+
+        # Add certifications
+        new_certs = result.get("certifications", [])
+        if new_certs and isinstance(profile.certifications, list):
+            existing = [c.lower() for c in profile.certifications]
+            for cert in new_certs:
+                if cert and cert.lower() not in existing:
+                    profile.certifications = [*profile.certifications, cert]
+
+        # Append to description
+        desc_add = result.get("description_addition")
+        if desc_add and isinstance(desc_add, str) and desc_add.strip():
+            current = profile.description or ""
+            if desc_add.strip() not in current:
+                profile.description = (current + "\n" + desc_add.strip()).strip()
+
+        await db.commit()
+        logger.info(f"[Profile] Wzbogacono profil firmy na podstawie tekstu użytkownika")
 
 
 def _get_attachment_files(tender: Tender) -> list[Path]:
@@ -108,11 +222,34 @@ SYSTEM_PROMPT = (
     "Jesteś krytycznym asystentem do analizy przetargów publicznych w Polsce. "
     "Pracujesz sceptycznie: nie przytakujesz, tylko weryfikujesz wymagania i wyłapujesz ryzyka formalne. "
     "Nigdy się nie domyślaj — jeśli czegoś nie wiesz lub brakuje informacji, zaznacz to wyraźnie. "
-    "Jeśli firma jest software house'em (JDG, tworzenie oprogramowania na zamówienie) a zamówienie dotyczy "
-    "dostawy licencji gotowego oprogramowania lub wymaga statusu autoryzowanego partnera producenta — "
-    "traktuj to jako niespełnienie warunku. "
+    "Gdy przywołujesz wymaganie lub ryzyko — odwołuj się do konkretnego miejsca w dokumentach "
+    "(nazwa dokumentu, rozdział/paragraf/punkt/załącznik). "
+    "Firma jest software house'em (JDG, tworzenie oprogramowania na zamówienie, wdrożenia open source). "
+    "Jeśli zamówienie dotyczy dostawy licencji gotowego oprogramowania lub wymaga statusu "
+    "autoryzowanego partnera producenta — traktuj to jako niespełnienie warunku. "
+    "W przypadku niejednoznacznych zapisów nie zakładaj interpretacji na korzyść firmy. "
     "Odpowiadaj po polsku. Zwracaj WYŁĄCZNIE valid JSON bez dodatkowego tekstu."
 )
+
+
+def _safe_result(result: Any) -> dict:
+    """Extract dict from Claude result, handling string/markdown fallback."""
+    if isinstance(result, dict):
+        # Handle case where previous _safe_result wrapped in {"raw": ...}
+        if "raw" in result and len(result) == 1:
+            from app.services.claude_service import _extract_json
+            inner = result["raw"]
+            extracted = _extract_json(inner) if isinstance(inner, str) else None
+            if isinstance(extracted, dict):
+                return extracted
+        return result
+    from app.services.claude_service import _extract_json
+    if isinstance(result, str):
+        extracted = _extract_json(result)
+        if isinstance(extracted, dict):
+            return extracted
+    logger.warning(f"[Analysis] _safe_result nie sparsował wyniku: {str(result)[:200]}")
+    return {"raw": result}
 
 
 # --- Step implementations ---
@@ -122,7 +259,7 @@ async def run_step0(
     profile: CompanyProfile,
     fix_context: str | None = None,
 ) -> dict:
-    """Step 0: Eligibility check."""
+    """Step 0: Eligibility check — warunki udziału w postępowaniu."""
     company_json = _build_company_context(profile)
     attachments = _get_attachment_files(tender)
 
@@ -143,6 +280,18 @@ Sprawdź: uprawnienia/koncesje/licencje, doświadczenie (realizacje, min. warto�
 personel (role, certyfikaty, lata doświadczenia), sytuacja ekonomiczna/finansowa (OC, przychody),
 brak podstaw wykluczenia (Pzp), inne warunki szczególne (lokalizacja, czas reakcji, ISO, itp.).
 
+TWARDA REGUŁA: Jeśli choć jeden warunek nie jest spełniony i nie da się go realnie naprawić
+(np. wymaga konsorcjum, podwykonawcy, uzupełnienia certyfikatów, polisy OC, innej referencji) —
+zaznacz to jednoznacznie. Sztuczne obejścia i naginanie profilu firmy = niespełnienie warunku.
+
+Dla każdego niespełnionego warunku podaj REALNE opcje naprawy:
+- konsorcjum z inną firmą
+- podwykonawca z wymaganymi uprawnieniami
+- uzupełnienie personelu / certyfikatów
+- uzyskanie polisy OC
+- inna referencja z portfolio
+Jeśli żadna opcja nie jest realna — napisz "brak realnych opcji naprawy".
+
 Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
 {
   "eligible": true lub false,
@@ -151,31 +300,25 @@ Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
       "name": "nazwa warunku po polsku",
       "description": "co jest wymagane wg dokumentacji",
       "met": true lub false,
-      "reason": "dlaczego spełniony/niespełniony — odwołaj się do dokumentów",
+      "reason": "dlaczego spełniony/niespełniony — odwołaj się do konkretnego miejsca w dokumentach (SWZ pkt X.Y, OPZ rozdz. Z)",
       "fixable": true lub false,
-      "fix_options": ["opcja naprawcza 1", "opcja 2"]
+      "fix_options": ["opcja naprawcza 1 — realna i konkretna", "opcja 2"]
     }
   ],
   "summary": "krótkie podsumowanie oceny (2-3 zdania po polsku)",
-  "scope_description": "co trzeba zrealizować w ramach zamówienia (2-3 zdania po polsku)",
-  "estimated_budget": "budżet z dokumentacji lub szacunek lub 'nieokreślony'"
+  "scope_description": "co trzeba zrealizować w ramach zamówienia (3-5 zdań po polsku, zrozumiałe dla nietechnicznej osoby)",
+  "estimated_budget": "budżet z dokumentacji, lub szacunek z uzasadnieniem, lub 'nieokreślony'"
 }"""
 
-    result = await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT)
-    if isinstance(result, dict):
-        return result
-    # Try to extract JSON from string response
-    from app.services.claude_service import _extract_json
-    extracted = _extract_json(result) if isinstance(result, str) else None
-    return extracted if isinstance(extracted, dict) else {"raw": result}
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
 
 
 async def run_step1(tender: Tender, profile: CompanyProfile) -> dict:
-    """Step 1: Required documents list."""
+    """Step 1: Scope & Requirements Analysis — dekompozycja zakresu."""
     company_json = _build_company_context(profile)
     attachments = _get_attachment_files(tender)
 
-    prompt = f"""Na podstawie dokumentacji przetargowej wymień WSZYSTKIE wymagane dokumenty, formularze, oświadczenia i załączniki do oferty.
+    prompt = f"""Na podstawie dokumentacji przetargowej (SWZ, OPZ, załączniki) dokonaj SZCZEGÓŁOWEJ dekompozycji zakresu zamówienia.
 
 ## Profil firmy:
 {company_json}
@@ -183,47 +326,60 @@ async def run_step1(tender: Tender, profile: CompanyProfile) -> dict:
 ## Treść przetargu:
 {tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
 
-Wypisz KOMPLETNĄ listę. Dla każdego dokumentu podaj: nazwę, czy wymaga wypełnienia/podpisu, termin złożenia, szczególne wymagania.
+Twoim zadaniem jest wyciągnięcie WSZYSTKICH wymagań — zarówno funkcjonalnych jak i niefunkcjonalnych.
+Podziel wymagania na konkretne, implementowalne elementy. Każde wymaganie musi mieć kryteria akceptacji.
 
-Odpowiedz TYLKO jako JSON (bez markdown):
+Dla każdego wymagania oceń priorytet:
+- "must_have" — wymaganie obowiązkowe z SWZ/OPZ, brak = odrzucenie oferty
+- "should_have" — wymaganie sugerowane/pożądane, daje dodatkowe punkty
+- "nice_to_have" — wymaganie dodatkowe, może wyróżnić ofertę
+
+Odwołuj się do konkretnych miejsc w dokumentach (np. "OPZ pkt 3.2.1", "SWZ rozdz. VII").
+
+Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
 {{
-  "documents": [
+  "scope_summary": "ogólny opis co trzeba zrobić — 3-5 zdań po polsku, zrozumiałe dla nietechnicznej osoby",
+  "functional_requirements": [
     {{
-      "name": "nazwa dokumentu",
-      "type": "formularz" | "oswiadczenie" | "wykaz" | "referencja" | "polisa" | "pelnomonictwo" | "inne",
-      "description": "co musi zawierać",
-      "requires_signature": true/false,
-      "requires_stamp": true/false,
-      "deadline": "termin lub null",
-      "notes": "dodatkowe uwagi"
+      "id": "FR-001",
+      "name": "krótka nazwa wymagania",
+      "description": "szczegółowy opis co system musi robić",
+      "priority": "must_have",
+      "acceptance_criteria": ["kryterium akceptacji 1", "kryterium 2"],
+      "source_reference": "gdzie w dokumentacji (np. 'OPZ pkt 3.2.1')"
     }}
   ],
-  "wadium": {{
-    "required": true/false,
-    "amount": "kwota lub null",
-    "forms": ["forma wniesienia"],
-    "deadline": "termin",
-    "bank_account": "konto jeśli podane",
-    "notes": "dodatkowe warunki"
-  }},
-  "summary": "podsumowanie 1-2 zdania"
+  "non_functional_requirements": [
+    {{
+      "name": "nazwa (np. wydajność, dostępność, bezpieczeństwo, RODO)",
+      "description": "szczegółowy opis wymagania",
+      "metric": "mierzalna wartość (np. 'czas odpowiedzi < 2s', '99.5% SLA')",
+      "source_reference": "odniesienie do dokumentacji"
+    }}
+  ],
+  "deliverables": [
+    {{
+      "name": "nazwa produktu do dostarczenia",
+      "description": "co dokładnie trzeba dostarczyć",
+      "format": "forma dostarczenia (np. 'kod źródłowy', 'dokumentacja PDF', 'szkolenie')",
+      "deadline": "termin dostarczenia lub null"
+    }}
+  ],
+  "out_of_scope": ["rzeczy które NIE wchodzą w zakres ale mogą być mylące"],
+  "assumptions": ["założenia przyjęte przy analizie — rzeczy niejasne w SWZ"],
+  "open_questions": ["pytania które TRZEBA zadać zamawiającemu przed złożeniem oferty — konkretne, z odwołaniem do dokumentów"],
+  "summary": "podsumowanie zakresu — 2-3 zdania"
 }}"""
 
-    result = await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT)
-    if isinstance(result, dict):
-        return result
-    # Try to extract JSON from string response
-    from app.services.claude_service import _extract_json
-    extracted = _extract_json(result) if isinstance(result, str) else None
-    return extracted if isinstance(extracted, dict) else {"raw": result}
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
 
 
-async def run_step2(tender: Tender, profile: CompanyProfile) -> dict:
-    """Step 2: Pricing items, criteria, deadlines, personnel."""
+async def run_step2(tender: Tender, profile: CompanyProfile, prev_results: dict) -> dict:
+    """Step 2: Technical Solution & Open Source — propozycja rozwiązania technicznego."""
     company_json = _build_company_context(profile)
     attachments = _get_attachment_files(tender)
 
-    prompt = f"""Na podstawie dokumentacji przetargowej wypisz WSZYSTKIE informacje potrzebne do przygotowania oferty.
+    prompt = f"""Na podstawie wymagań z analizy zakresu zaproponuj rozwiązanie techniczne dla tego zamówienia.
 
 ## Profil firmy:
 {company_json}
@@ -231,14 +387,114 @@ async def run_step2(tender: Tender, profile: CompanyProfile) -> dict:
 ## Treść przetargu:
 {tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
 
-Odpowiedz TYLKO jako JSON (bez markdown):
+## Wymagania (z kroku 1):
+{json.dumps(prev_results.get("step1", {{}}), ensure_ascii=False, indent=2)}
+
+KLUCZOWE ZADANIE: Sprawdź czy istniejące rozwiązania open source mogą pokryć wymagania.
+Rozważ w szczególności:
+- Moodle (e-learning, LMS, szkolenia)
+- WordPress (CMS, strony www, portale informacyjne)
+- Symfony / Laravel (framework PHP do aplikacji webowych na zamówienie)
+- Django / FastAPI (framework Python do aplikacji webowych)
+- Drupal (CMS dla instytucji publicznych)
+- Nextcloud (zarządzanie dokumentami, współpraca)
+- Odoo (ERP, CRM, zarządzanie)
+- Redmine / GitLab (zarządzanie projektami)
+- Keycloak (SSO, zarządzanie tożsamościami)
+- Inne popularne rozwiązania open source pasujące do wymagań
+
+Dla każdego rozpatrywanego rozwiązania podaj:
+- Jaki procent wymagań pokrywa "z pudełka"
+- Co trzeba dostosować/dopisać
+- Czy licencja pozwala na użycie w zamówieniu publicznym
+
+Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
 {{
+  "recommended_architecture": "opis proponowanej architektury — 3-5 zdań, dlaczego taki wybór",
+  "open_source_analysis": [
+    {{
+      "name": "nazwa rozwiązania (np. Moodle 4.x)",
+      "category": "LMS|CMS|Framework|ERP|inne",
+      "fits": true,
+      "coverage_pct": 75,
+      "pros": ["zaleta 1", "zaleta 2"],
+      "cons": ["wada 1", "wada 2"],
+      "customization_needed": "opis co trzeba dostosować/dopisać",
+      "license": "GPL-3.0",
+      "license_compatible": true
+    }}
+  ],
+  "proposed_stack": [
+    {{
+      "layer": "frontend|backend|database|infrastructure|tools|integration",
+      "technology": "nazwa technologii",
+      "version": "rekomendowana wersja",
+      "rationale": "dlaczego ta technologia",
+      "license": "typ licencji",
+      "cost": "darmowe|kwota"
+    }}
+  ],
+  "integration_points": [
+    {{
+      "name": "nazwa integracji (np. ePUAP, system zamawiającego, API)",
+      "description": "co trzeba zintegrować",
+      "technology": "API REST / SOAP / inne",
+      "complexity": "low|medium|high"
+    }}
+  ],
+  "hosting_recommendation": "rekomendowany hosting (cloud/on-premise/hybrid) i dlaczego",
+  "summary": "podsumowanie rekomendacji — 2-3 zdania"
+}}"""
+
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
+
+
+async def run_step3(tender: Tender, profile: CompanyProfile, prev_results: dict) -> dict:
+    """Step 3: Effort & Cost Estimation — wycena i koszty."""
+    company_json = _build_company_context(profile)
+    attachments = _get_attachment_files(tender)
+
+    prompt = f"""Na podstawie wymagań i proponowanego rozwiązania technicznego przygotuj KOMPLETNĄ estymację kosztów.
+
+## Profil firmy:
+{company_json}
+
+## Treść przetargu:
+{tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
+
+## Wymagania (krok 1) i rozwiązanie techniczne (krok 2):
+{json.dumps(prev_results, ensure_ascii=False, indent=2)}
+
+ZADANIE:
+1. Rozbij pracę na pakiety prac odpowiadające wymaganiom funkcjonalnym.
+2. Dla każdego pakietu podaj listę konkretnych zadań.
+3. Oszacuj roboczogodziny × {profile.hourly_rate_pln} PLN netto (stawka firmy).
+4. Dodaj narzut QA/testy: +{profile.qa_buffer_pct}%.
+5. Dodaj bufor bezpieczeństwa: +{profile.risk_buffer_pct}%.
+6. Wypisz pozycje do wyceny z formularza ofertowego (pricing_items).
+7. Wypisz kryteria oceny ofert i JAK KONKRETNIE zdobyć max punktów.
+8. Wypisz WSZYSTKIE terminy z dokumentacji (realizacja, SLA, gwarancja, rękojmia).
+9. Wypisz wymagany personel i dopasuj kandydatów z zespołu firmy.
+
+Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
+{{
+  "work_packages": [
+    {{
+      "name": "nazwa pakietu prac",
+      "description": "opis",
+      "tasks": ["zadanie 1", "zadanie 2", "zadanie 3"],
+      "hours": 40,
+      "cost_net_pln": 8000
+    }}
+  ],
   "pricing_items": [
     {{
-      "name": "nazwa pozycji do wyceny",
+      "name": "nazwa pozycji z formularza ofertowego",
       "description": "opis",
-      "unit": "jednostka (szt/godz/msc/ryczalt)",
-      "quantity": "ilość lub null",
+      "unit": "szt|godz|msc|ryczalt|komplet",
+      "quantity": 1,
+      "unit_price_net": 8000,
+      "total_net": 8000,
       "notes": "uwagi"
     }}
   ],
@@ -246,14 +502,16 @@ Odpowiedz TYLKO jako JSON (bez markdown):
     {{
       "name": "nazwa kryterium",
       "weight_pct": 60,
-      "scoring_method": "jak liczone punkty",
-      "how_to_maximize": "jak zdobyć max punktów"
+      "scoring_method": "jak liczone punkty — wzór",
+      "how_to_maximize": "konkretne zalecenie jak zdobyć max",
+      "our_strategy": "co dokładnie proponujemy w tym kryterium"
     }}
   ],
   "deadlines": [
     {{
       "name": "nazwa terminu",
       "date": "data lub okres",
+      "type": "submission|execution|warranty|other",
       "notes": "uwagi"
     }}
   ],
@@ -263,110 +521,8 @@ Odpowiedz TYLKO jako JSON (bez markdown):
       "min_experience_years": 5,
       "required_certifications": ["certyfikat"],
       "min_count": 1,
+      "our_candidate": "imię i nazwisko z profilu firmy lub 'brak w zespole — wymaga uzupełnienia'",
       "notes": "uwagi"
-    }}
-  ],
-  "sla_requirements": [
-    {{
-      "name": "wymaganie SLA",
-      "value": "wartość",
-      "penalty": "kara za niedotrzymanie"
-    }}
-  ],
-  "summary": "podsumowanie 2-3 zdania"
-}}"""
-
-    result = await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT)
-    if isinstance(result, dict):
-        return result
-    # Try to extract JSON from string response
-    from app.services.claude_service import _extract_json
-    extracted = _extract_json(result) if isinstance(result, str) else None
-    return extracted if isinstance(extracted, dict) else {"raw": result}
-
-
-async def run_step3(tender: Tender, profile: CompanyProfile, prev_results: dict) -> dict:
-    """Step 3: Risk analysis."""
-    company_json = _build_company_context(profile)
-    attachments = _get_attachment_files(tender)
-
-    prompt = f"""Przeprowadź analizę ryzyk dla tego przetargu. Uwzględnij wyniki poprzednich kroków analizy.
-
-## Profil firmy:
-{company_json}
-
-## Treść przetargu:
-{tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
-
-## Wyniki poprzednich kroków:
-{json.dumps(prev_results, ensure_ascii=False, indent=2)}
-
-Zidentyfikuj ryzyka:
-- odrzucenia oferty (formalnie/technicznie)
-- utraty punktów (kryteria, parametry, terminy, doświadczenie)
-- błędnej interpretacji SWZ/OPZ/umowy
-- błędnej wyceny (pominięte elementy, serwis, licencje, koszty infrastruktury)
-- niezgodności oferty z projektem umowy
-- braku wymaganych dokumentów
-- progu unijnego: 143 000 EUR netto (zaznacz jeśli może mieć znaczenie)
-
-Odpowiedz TYLKO jako JSON (bez markdown):
-{{
-  "risks": [
-    {{
-      "name": "nazwa ryzyka",
-      "severity": "high" | "medium" | "low",
-      "category": "formal" | "technical" | "financial" | "legal" | "timeline",
-      "description": "opis ryzyka — odwołaj się do konkretnych zapisów w dokumentach",
-      "mitigation": "zalecane działanie zapobiegawcze",
-      "impact": "co się stanie jeśli ryzyko się zmaterializuje"
-    }}
-  ],
-  "critical_warnings": ["lista rzeczy które mogą natychmiast spowodować odrzucenie oferty"],
-  "summary": "podsumowanie 2-3 zdania"
-}}"""
-
-    result = await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT)
-    if isinstance(result, dict):
-        return result
-    # Try to extract JSON from string response
-    from app.services.claude_service import _extract_json
-    extracted = _extract_json(result) if isinstance(result, str) else None
-    return extracted if isinstance(extracted, dict) else {"raw": result}
-
-
-async def run_step4(tender: Tender, profile: CompanyProfile, prev_results: dict) -> dict:
-    """Step 4: Cost estimation."""
-    company_json = _build_company_context(profile)
-    attachments = _get_attachment_files(tender)
-
-    prompt = f"""Przygotuj estymację kosztów realizacji tego zamówienia.
-
-## Profil firmy:
-{company_json}
-
-## Treść przetargu:
-{tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
-
-## Wyniki poprzednich kroków (pozycje do wyceny, kryteria, personel):
-{json.dumps(prev_results, ensure_ascii=False, indent=2)}
-
-Zasady wyceny:
-1. Zaproponuj realistyczny stack technologiczny (preferuj open source).
-2. Oszacuj roboczogodziny × {profile.hourly_rate_pln} PLN netto (stawka firmy).
-3. Dodaj narzut QA/testy: +{profile.qa_buffer_pct}%.
-4. Dodaj bufor bezpieczeństwa: +{profile.risk_buffer_pct}%.
-5. Wypisz koszty dodatkowe: serwery, certyfikaty, licencje, utrzymanie.
-
-Odpowiedz TYLKO jako JSON (bez markdown):
-{{
-  "proposed_stack": ["technologia 1", "technologia 2"],
-  "work_packages": [
-    {{
-      "name": "nazwa pakietu prac",
-      "description": "opis",
-      "hours": 40,
-      "cost_net_pln": 8000
     }}
   ],
   "subtotal_hours": 200,
@@ -377,32 +533,28 @@ Odpowiedz TYLKO jako JSON (bez markdown):
   "risk_buffer_pln": 8000,
   "additional_costs": [
     {{
-      "name": "nazwa kosztu",
+      "name": "nazwa kosztu (serwery, licencje, certyfikaty, dojazdy)",
       "description": "opis",
       "cost_net_pln": 500,
-      "recurring": "jednorazowy" | "miesięczny" | "roczny"
+      "recurring": "jednorazowy|miesięczny|roczny"
     }}
   ],
   "total_net_pln": 56000,
   "total_gross_pln": 68880,
+  "suggested_offer_price_net": 56000,
+  "price_justification": "uzasadnienie proponowanej ceny — 2-3 zdania",
   "summary": "podsumowanie wyceny 2-3 zdania"
 }}"""
 
-    result = await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT)
-    if isinstance(result, dict):
-        return result
-    # Try to extract JSON from string response
-    from app.services.claude_service import _extract_json
-    extracted = _extract_json(result) if isinstance(result, str) else None
-    return extracted if isinstance(extracted, dict) else {"raw": result}
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
 
 
-async def run_step5(tender: Tender, profile: CompanyProfile, prev_results: dict) -> list[dict]:
-    """Step 5: Document guidance — what to write in each document."""
+async def run_step4(tender: Tender, profile: CompanyProfile, prev_results: dict) -> dict:
+    """Step 4: Risk Analysis — analiza ryzyk."""
     company_json = _build_company_context(profile)
     attachments = _get_attachment_files(tender)
 
-    prompt = f"""Na podstawie wyników analizy przygotuj szczegółowe wytyczne do wypełnienia każdego wymaganego dokumentu ofertowego.
+    prompt = f"""Przeprowadź DOGŁĘBNĄ analizę ryzyk dla tego przetargu.
 
 ## Profil firmy:
 {company_json}
@@ -410,31 +562,192 @@ async def run_step5(tender: Tender, profile: CompanyProfile, prev_results: dict)
 ## Treść przetargu:
 {tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
 
-## Wyniki analizy (wymagane dokumenty, wycena, kryteria):
+## Wyniki poprzednich kroków (zakres, technologia, wycena):
 {json.dumps(prev_results, ensure_ascii=False, indent=2)}
 
-Dla KAŻDEGO wymaganego dokumentu podaj:
-- dokładną instrukcję co i jak wypełnić
-- gotowy tekst do skopiowania (tam gdzie to możliwe)
-- dane firmy do wstawienia
+Zidentyfikuj ryzyka w kategoriach:
+1. FORMALNE: odrzucenie oferty, brak dokumentów, błędy formalne
+2. TECHNICZNE: zła architektura, brak kompetencji, integracje, wydajność
+3. FINANSOWE: zaniżona wycena, kary umowne, ukryte koszty, serwis, licencje
+4. PRAWNE: niekorzystne zapisy umowy, odpowiedzialność, RODO, IP, licencje
+5. TERMINOWE: nierealne terminy, opóźnienia, zależności od zamawiającego
+6. PERSONALNE: brak kadry, rotacja, kompetencje
 
-Odpowiedz TYLKO jako JSON (bez markdown):
+Dla KAŻDEGO ryzyka oceń:
+- prawdopodobieństwo (1-5)
+- wpływ (1-5)
+- wynik = prawdopodobieństwo × wpływ
+
+Sprawdź też:
+- Próg unijny 143 000 EUR netto — zaznacz jeśli może mieć znaczenie
+- Zapisy umowy — pułapki (kary, odpowiedzialność, IP, gwarancja bez limitu)
+- Czy wycena pokrywa WSZYSTKIE wymagane elementy
+
+Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
+{{
+  "risks": [
+    {{
+      "name": "nazwa ryzyka",
+      "severity": "high|medium|low",
+      "category": "formal|technical|financial|legal|timeline|personnel",
+      "probability": 3,
+      "impact": 4,
+      "risk_score": 12,
+      "description": "opis ryzyka — odwołaj się do konkretnych zapisów w dokumentach",
+      "mitigation": "zalecane działanie zapobiegawcze — KONKRETNE, nie ogólnikowe",
+      "impact_description": "co się stanie jeśli ryzyko się zmaterializuje",
+      "owner": "kto powinien zarządzać (PM, prawnik, technik, finanse)"
+    }}
+  ],
+  "critical_warnings": ["rzeczy które mogą NATYCHMIAST spowodować odrzucenie oferty"],
+  "contract_red_flags": ["niebezpieczne zapisy w projekcie umowy — cytat + dlaczego groźne"],
+  "go_no_go_recommendation": "GO|GO z zastrzeżeniami|NO-GO",
+  "recommendation_rationale": "uzasadnienie rekomendacji — 2-3 zdania",
+  "summary": "podsumowanie ryzyk — 2-3 zdania"
+}}"""
+
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
+
+
+async def run_step5(tender: Tender, profile: CompanyProfile, prev_results: dict) -> dict:
+    """Step 5: Document Preparation Guide — dokumenty ofertowe z gotowym tekstem."""
+    company_json = _build_company_context(profile)
+    attachments = _get_attachment_files(tender)
+
+    prompt = f"""Na podstawie WSZYSTKICH wyników analizy przygotuj KOMPLETNY przewodnik po dokumentach ofertowych.
+
+## Profil firmy:
+{company_json}
+
+## Treść przetargu:
+{tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
+
+## Wyniki wszystkich kroków analizy:
+{json.dumps(prev_results, ensure_ascii=False, indent=2)}
+
+ZADANIE:
+1. Wymień WSZYSTKIE dokumenty wymagane w ofercie (formularze, oświadczenia, wykazy, referencje, pełnomocnictwa).
+2. Dla KAŻDEGO dokumentu podaj:
+   - Dokładną instrukcję krok po kroku co i jak wypełnić
+   - GOTOWY TEKST do skopiowania i wklejenia — używaj PRAWDZIWYCH danych z profilu firmy!
+   - Ostrzeżenia co może spowodować odrzucenie
+3. Uwzględnij dane firmy: nazwa, NIP, adres, osoba kontaktowa, numer konta bankowego.
+4. Uwzględnij dane z wyceny: ceny, stawki, godziny z kroku 3.
+5. Uwzględnij dane personelu: imiona, nazwiska, doświadczenie z profilu firmy.
+6. Uwzględnij wadium jeśli wymagane.
+7. Przygotuj checklistę — co sprawdzić przed złożeniem oferty.
+
+WAŻNE: Tekst sugerowany musi być GOTOWY DO UŻYCIA — NIE pisz "[wstaw tu...]",
+tylko użyj prawdziwych danych z profilu firmy. Użytkownik skopiuje tekst i wklei do DOCX.
+
+Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
 {{
   "document_guides": [
     {{
       "document_name": "nazwa dokumentu / formularza",
-      "instruction": "szczegółowa instrukcja co wypełnić, krok po kroku",
-      "suggested_text": "gotowy tekst do skopiowania i wklejenia (używaj danych firmy z profilu)",
-      "warnings": "na co uważać, co może spowodować odrzucenie"
+      "document_type": "formularz|oswiadczenie|wykaz|referencja|oferta|pelnomocnictwo|inne",
+      "is_required": true,
+      "requires_signature": true,
+      "instruction": "szczegółowa instrukcja krok po kroku — numerowana lista",
+      "suggested_text": "GOTOWY tekst do skopiowania — z wypełnionymi danymi firmy, cenami z wyceny, personelem",
+      "warnings": "na co uważać, co może spowodować odrzucenie",
+      "deadline": "termin złożenia lub null"
     }}
+  ],
+  "wadium": {{
+    "required": true,
+    "amount": "kwota",
+    "forms": ["przelew", "gwarancja bankowa"],
+    "deadline": "termin wniesienia",
+    "bank_account": "konto zamawiającego",
+    "our_action": "co dokładnie musimy zrobić żeby wnieść wadium",
+    "notes": "dodatkowe warunki"
+  }},
+  "submission_checklist": [
+    "Formularz ofertowy wypełniony i podpisany kwalifikowanym podpisem elektronicznym",
+    "Oświadczenie o niepodleganiu wykluczeniu podpisane",
+    "Wykaz usług z referencjami",
+    "element N do sprawdzenia"
   ],
   "general_notes": "ogólne uwagi dotyczące składania oferty"
 }}"""
 
-    result = await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT)
-    if isinstance(result, dict) and "document_guides" in result:
-        return result["document_guides"]
-    return [{"document_name": "Wynik analizy", "instruction": "", "suggested_text": json.dumps(result, ensure_ascii=False, indent=2), "warnings": ""}]
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
+
+
+async def run_step6(
+    tender: Tender,
+    profile: CompanyProfile,
+    prev_results: dict,
+    uploaded_files: list[dict],
+) -> dict:
+    """Step 6: Document Verification — weryfikacja przygotowanych dokumentów."""
+    company_json = _build_company_context(profile)
+    attachments = _get_attachment_files(tender)
+
+    files_text = ""
+    for f in uploaded_files:
+        files_text += f"\n\n--- DOKUMENT UŻYTKOWNIKA: {f['filename']} ---\n{f['content']}\n"
+
+    prompt = f"""Zweryfikuj dokumenty ofertowe przygotowane przez firmę pod kątem zgodności z wymaganiami przetargu.
+
+## Profil firmy:
+{company_json}
+
+## Treść przetargu (SWZ/OPZ):
+{tender.tender_text or "(brak tekstu — analizuj na podstawie załączników)"}
+
+## Wyniki analizy (wymagane dokumenty, wycena, personel):
+{json.dumps(prev_results, ensure_ascii=False, indent=2)}
+
+## Dokumenty przesłane przez firmę do weryfikacji:
+{files_text}
+
+ZADANIE — bądź KRYTYCZNY i DOKŁADNY. Każdy błąd formalny = ryzyko odrzucenia oferty.
+Lepiej zgłosić za dużo uwag niż za mało.
+
+Dla KAŻDEGO przesłanego dokumentu sprawdź:
+1. Czy zawiera WSZYSTKIE wymagane elementy wg SWZ
+2. Czy dane firmy (nazwa, NIP, adres) są poprawne i spójne między dokumentami
+3. Czy kwoty/ceny są spójne między formularzem ofertowym a wyceną
+4. Czy brakuje podpisów, dat, pieczęci (zaznacz gdzie)
+5. Czy tekst nie zawiera błędów merytorycznych lub literówek w kluczowych miejscach
+6. Czy oferta jest zgodna z projektem umowy
+7. Czy nie brakuje żadnego wymaganego dokumentu w zestawie
+
+Odpowiedz TYLKO jako JSON (bez markdown, bez ```):
+{{
+  "overall_status": "ok|issues_found",
+  "documents_checked": [
+    {{
+      "filename": "nazwa pliku",
+      "document_type": "rozpoznany typ dokumentu",
+      "status": "ok|warning|error",
+      "issues": [
+        {{
+          "severity": "error|warning|info",
+          "description": "opis problemu — KONKRETNY, z cytatem z dokumentu jeśli możliwe",
+          "location": "gdzie w dokumencie (nr strony, sekcja, wiersz)",
+          "fix_suggestion": "co dokładnie zmienić — gotowa treść do wklejenia jeśli możliwe",
+          "risk": "co się stanie jeśli nie naprawione (np. 'odrzucenie oferty')"
+        }}
+      ],
+      "completeness_pct": 90,
+      "missing_elements": ["brakujący element 1", "brakujący element 2"]
+    }}
+  ],
+  "missing_documents": ["dokumenty wymagane w SWZ ale NIE przesłane do weryfikacji"],
+  "cross_document_issues": [
+    {{
+      "description": "niespójność między dokumentami (np. różne kwoty, daty, dane)",
+      "documents_involved": ["dokument 1", "dokument 2"],
+      "fix_suggestion": "jak naprawić"
+    }}
+  ],
+  "summary": "podsumowanie weryfikacji — czy oferta jest gotowa do złożenia, 2-3 zdania"
+}}"""
+
+    return _safe_result(await call_claude(prompt, context_files=attachments, system_prompt=SYSTEM_PROMPT))
 
 
 # --- Background task runner ---
@@ -461,11 +774,12 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
         )
         profile = result.scalar_one_or_none()
         if not profile:
-            analysis.status = "failed"
-            analysis.error_message = "Brak profilu firmy — uzupełnij dane w zakładce Profil firmy."
+            # Auto-create empty profile so analysis can proceed
+            profile = CompanyProfile(user_id=1)
+            db.add(profile)
             await db.commit()
-            await _emit(analysis_id, "error", {"message": analysis.error_message})
-            return
+            await db.refresh(profile, ["team_members", "portfolio_projects"])
+            logger.info(f"[Analysis {analysis_id}] Auto-utworzono pusty profil firmy")
 
         await _emit(analysis_id, "step_started", {"step": step})
         logger.info(f"[Analysis {analysis_id}] Rozpoczynam krok {step}, tender_id={analysis.tender_id}")
@@ -476,51 +790,53 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
                 if analysis.step0_fix_actions:
                     fix_context = json.dumps(analysis.step0_fix_actions, ensure_ascii=False)
                 step_result = await run_step0(tender, profile, fix_context)
-                logger.info(f"[Analysis {analysis_id}] Krok 0 wynik: typ={type(step_result).__name__}, "
-                            f"klucze={list(step_result.keys()) if isinstance(step_result, dict) else 'N/A'}")
+                logger.info(f"[Analysis {analysis_id}] Krok 0 wynik: eligible={step_result.get('eligible')}")
                 analysis.step0_result = step_result
                 eligible = step_result.get("eligible", False) if isinstance(step_result, dict) else False
                 analysis.step0_eligible = eligible
                 analysis.status = "waiting_user"
-                logger.info(f"[Analysis {analysis_id}] Krok 0 zakończony: eligible={eligible}, status=waiting_user")
 
             elif step == 1:
                 step_result = await run_step1(tender, profile)
-                logger.info(f"[Analysis {analysis_id}] Krok 1 zakończony, klucze={list(step_result.keys()) if isinstance(step_result, dict) else 'N/A'}")
+                logger.info(f"[Analysis {analysis_id}] Krok 1 zakończony")
                 analysis.step1_result = step_result
-                analysis.status = "waiting_user"
 
             elif step == 2:
-                step_result = await run_step2(tender, profile)
-                logger.info(f"[Analysis {analysis_id}] Krok 2 zakończony, klucze={list(step_result.keys()) if isinstance(step_result, dict) else 'N/A'}")
+                prev = {"step1": analysis.step1_result}
+                step_result = await run_step2(tender, profile, prev)
+                logger.info(f"[Analysis {analysis_id}] Krok 2 zakończony")
                 analysis.step2_result = step_result
-                analysis.status = "waiting_user"
 
             elif step == 3:
                 prev = {"step1": analysis.step1_result, "step2": analysis.step2_result}
                 step_result = await run_step3(tender, profile, prev)
-                logger.info(f"[Analysis {analysis_id}] Krok 3 zakończony, klucze={list(step_result.keys()) if isinstance(step_result, dict) else 'N/A'}")
+                logger.info(f"[Analysis {analysis_id}] Krok 3 zakończony")
                 analysis.step3_result = step_result
-                analysis.status = "waiting_user"
 
             elif step == 4:
-                prev = {"step2": analysis.step2_result, "step3": analysis.step3_result}
+                prev = {
+                    "step1": analysis.step1_result,
+                    "step2": analysis.step2_result,
+                    "step3": analysis.step3_result,
+                }
                 step_result = await run_step4(tender, profile, prev)
-                logger.info(f"[Analysis {analysis_id}] Krok 4 zakończony, klucze={list(step_result.keys()) if isinstance(step_result, dict) else 'N/A'}")
+                logger.info(f"[Analysis {analysis_id}] Krok 4 zakończony")
                 analysis.step4_result = step_result
-                analysis.status = "waiting_user"
 
             elif step == 5:
                 prev = {
                     "step1": analysis.step1_result,
                     "step2": analysis.step2_result,
+                    "step3": analysis.step3_result,
                     "step4": analysis.step4_result,
                 }
-                doc_guides = await run_step5(tender, profile, prev)
-                analysis.step5_result = {"document_guides": doc_guides}
+                step_result = await run_step5(tender, profile, prev)
+                logger.info(f"[Analysis {analysis_id}] Krok 5 zakończony")
+                analysis.step5_result = step_result
 
-                # Save documents to DB
-                for i, guide in enumerate(doc_guides):
+                # Save document guides to DB
+                guides = step_result.get("document_guides", []) if isinstance(step_result, dict) else []
+                for i, guide in enumerate(guides):
                     doc = AnalysisDocument(
                         analysis_id=analysis.id,
                         document_name=guide.get("document_name", f"Dokument {i+1}"),
@@ -533,9 +849,10 @@ async def _run_analysis_step(analysis_id: int, step: int) -> None:
                 analysis.status = "completed"
                 tender.status = "completed"
 
+            # For steps 1-4, don't set waiting_user — they auto-continue
             analysis.current_step = step
             await db.commit()
-            logger.info(f"[Analysis {analysis_id}] Krok {step} zapisany do DB, status={analysis.status}")
+            logger.info(f"[Analysis {analysis_id}] Krok {step} zapisany, status={analysis.status}")
             await _emit(analysis_id, "step_completed", {"step": step, "status": analysis.status})
 
         except Exception as e:
@@ -566,7 +883,7 @@ async def launch_step(analysis_id: int, step: int) -> None:
 
 
 async def launch_remaining_steps(analysis_id: int, from_step: int) -> None:
-    """Run steps sequentially from from_step through 5."""
+    """Run steps sequentially from from_step through 5. Step 6 is user-triggered separately."""
 
     async def _run_sequential():
         try:
@@ -589,5 +906,66 @@ async def launch_remaining_steps(analysis_id: int, from_step: int) -> None:
             logger.exception(f"[Analysis {analysis_id}] Nieobsłużony wyjątek w launch_remaining_steps")
 
     task = asyncio.create_task(_run_sequential())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def run_verification(analysis_id: int, uploaded_files: list[dict]) -> None:
+    """Run step 6 verification on uploaded documents (separate from main pipeline)."""
+    logger.info(f"[Analysis {analysis_id}] Uruchamiam weryfikację dokumentów ({len(uploaded_files)} plików)")
+
+    async def _run():
+        try:
+            async with async_session() as db:
+                analysis = await db.get(Analysis, analysis_id)
+                if not analysis:
+                    return
+
+                tender = await db.get(Tender, analysis.tender_id)
+                if not tender:
+                    return
+
+                result_q = await db.execute(
+                    select(CompanyProfile).options(
+                        selectinload(CompanyProfile.team_members),
+                        selectinload(CompanyProfile.portfolio_projects),
+                    ).where(CompanyProfile.user_id == 1)
+                )
+                profile = result_q.scalar_one_or_none()
+                if not profile:
+                    analysis.status = "failed"
+                    analysis.error_message = "Brak profilu firmy."
+                    await db.commit()
+                    await _emit(analysis_id, "error", {"message": analysis.error_message})
+                    return
+
+                await _emit(analysis_id, "step_started", {"step": 6})
+
+                prev = {
+                    "step1": analysis.step1_result,
+                    "step3": analysis.step3_result,
+                    "step5": analysis.step5_result,
+                }
+
+                step_result = await run_step6(tender, profile, prev, uploaded_files)
+                analysis.step6_result = step_result
+                analysis.current_step = 6
+                analysis.status = "completed"
+                await db.commit()
+
+                logger.info(f"[Analysis {analysis_id}] Weryfikacja zakończona: {step_result.get('overall_status')}")
+                await _emit(analysis_id, "step_completed", {"step": 6, "status": "completed"})
+
+        except Exception as e:
+            logger.exception(f"[Analysis {analysis_id}] Błąd weryfikacji: {e}")
+            async with async_session() as db:
+                analysis = await db.get(Analysis, analysis_id)
+                if analysis:
+                    analysis.status = "completed"  # Don't block — verification is optional
+                    analysis.error_message = f"Weryfikacja nieudana: {str(e)[:500]}"
+                    await db.commit()
+            await _emit(analysis_id, "error", {"step": 6, "message": str(e)[:500]})
+
+    task = asyncio.create_task(_run())
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
